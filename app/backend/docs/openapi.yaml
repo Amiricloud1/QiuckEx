@@ -248,6 +248,45 @@ paths:
                 $ref: "#/components/schemas/SearchUsernamesResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /username/featured:
+    get:
+      tags: [usernames]
+      operationId: getFeaturedCreators
+      summary: Get featured creators
+      description: >
+        Returns featured creator profiles curated for discovery.
+        Only profiles with public visibility enabled appear in results.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque pagination cursor
+      responses:
+        "200":
+          description: Featured creators
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchDiscoveryResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /username/trending:
     get:
@@ -283,6 +322,10 @@ paths:
                 $ref: "#/components/schemas/TrendingCreatorsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /username/recently-active:
     get:
@@ -316,6 +359,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecentlyActiveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /username/toggle-public:
     post:
@@ -2433,6 +2482,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: Service temporarily unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
 
   # -------------------------------------------------------------------------
   # Schemas
@@ -2589,6 +2644,29 @@ components:
             $ref: "#/components/schemas/PublicProfile"
         total:
           type: integer
+        cursor:
+          type: string
+          nullable: true
+          description: Cursor to pass to the next request
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+
+    SearchDiscoveryResult:
+      type: object
+      properties:
+        profiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicProfile"
+        total:
+          type: integer
+        cursor:
+          type: string
+          nullable: true
+          description: Cursor to pass to the next request
         next_cursor:
           type: string
           nullable: true

@@ -19,6 +19,11 @@ import { UsernameReconciliationController } from "./username-reconciliation.cont
     UsernameRankingService,
     UsernameReconciliationService,
   ],
-  exports: [UsernamesService, UsernameRankingService, UsernameReconciliationService],
+  exports: [
+    UsernamesService,
+    DiscoveryCacheService,
+    UsernameRankingService,
+    UsernameReconciliationService,
+  ],
 })
 export class UsernamesModule {}

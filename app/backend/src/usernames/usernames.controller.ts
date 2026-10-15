@@ -261,6 +261,14 @@ export class UsernamesController {
     status: 400,
     description: "Invalid search query",
   })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Search service temporarily unavailable",
+  })
   async searchUsernames(
     @Query() query: SearchUsernamesQueryDto,
   ): Promise<SearchUsernamesResponseDto> {
@@ -320,6 +328,14 @@ export class UsernamesController {
     status: 400,
     description: "Invalid time window parameter",
   })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Trending service temporarily unavailable",
+  })
   async getTrendingCreators(
     @Query() query: TrendingCreatorsQueryDto,
   ): Promise<TrendingCreatorsResponseDto> {
@@ -377,6 +393,14 @@ export class UsernamesController {
     status: 400,
     description: "Invalid time window parameter",
   })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Recently active service temporarily unavailable",
+  })
   async getRecentlyActive(
     @Query() query: RecentlyActiveQueryDto,
   ): Promise<RecentlyActiveResponseDto> {
@@ -424,6 +448,14 @@ export class UsernamesController {
     status: 200,
     description: "List of featured creator profiles sorted by featured rank",
     type: FeaturedUsernamesResponseDto,
+  })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Featured service temporarily unavailable",
   })
   async getFeaturedCreators(
     @Query() query: FeaturedUsernamesQueryDto,
@@ -508,6 +540,9 @@ export class UsernamesController {
     }
   }
 
+  // NOTE: This catch-all route MUST remain the last @Get route declared in this
+  // controller. The discovery routes above (search, trending, recently-active,
+  // featured) would otherwise be shadowed by ":username".
   @Get(":username")
   @ApiOperation({
     summary: "Get profile by username",
@@ -521,6 +556,14 @@ export class UsernamesController {
   @ApiResponse({
     status: 404,
     description: "Username not found",
+  })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Profile service temporarily unavailable",
   })
   async getProfile(
     @Param("username") username: string,

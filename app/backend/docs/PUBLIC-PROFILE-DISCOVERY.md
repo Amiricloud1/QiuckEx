@@ -3,7 +3,60 @@
 ## Overview
 This document summarizes the implementation of the public profile discovery feature for QuickEx, enabling users to find public profiles via fuzzy search and discover trending creators based on transaction volume.
 
-## Features Implemented
+## Discovery Endpoints
+
+All discovery endpoints are read-only, paginated with opaque cursors, and gated
+behind feature flags. They share a common error contract and caching policy.
+
+### Common Query Parameters
+
+| Parameter | Type | Default | Range | Notes |
+| --- | --- | --- | --- | --- |
+| `limit` | integer | 10 | 1-100 | Page size |
+| `cursor` | string | — | — | Opaque pagination cursor from a previous response |
+| `query` | string | — | min 2 chars | Search term (search endpoint only) |
+| `timeWindowHours` | integer | 24 | 1-720 | Ranking window (trending endpoint only) |
+
+### Pagination Cursors
+
+Responses include `nextCursor` (nullable) and `hasMore`. Cursors are opaque,
+base64url-encoded, and encode the last-seen sort key plus a snapshot timestamp.
+They are stable across pages and expire after 15 minutes; an expired or
+malformed cursor returns `400`. Clients must not construct cursors themselves.
+
+### Common Error Codes
+
+| Status | Meaning | Retryable |
+| --- | --- | --- |
+| `400` | Malformed query, invalid `limit`/`cursor`, or invalid `timeWindowHours` | No |
+| `429` | Rate limit exceeded (per-IP and per-key buckets) | Yes, after `Retry-After` |
+| `503` | Dependency failure (database or cache unavailable) | Yes |
+
+`429` responses include a `Retry-After` header. `503` responses are safe to
+retry with backoff; discovery reads never mutate state.
+
+### Caching TTLs
+
+| Cache key | TTL | Invalidated by |
+| --- | --- | --- |
+| `profile:search:{queryHash}:{cursor}` | 60s | Metadata write, visibility toggle |
+| `profile:trending:{window}:{cursor}` | 300s | Metadata write, visibility toggle |
+| `profile:meta:{username}` / `profile:meta:{publicKey}` | 600s | Metadata write |
+
+Reads are read-through: a miss falls back to the database and repopulates the
+cache. If the cache backend is unavailable, reads fall through to the database
+and the response includes `"cacheDegraded": true`.
+
+### Feature-Flag Gating
+
+| Flag | Gates | Default |
+| --- | --- | --- |
+| `PUBLIC_PROFILE_DISCOVERY` | All four discovery endpoints | off on mainnet |
+| `USERNAME_RENAME_REDIRECTS` | Rename redirects + `resolve` | off on mainnet |
+| `VERIFIED_PROFILE_METADATA` | Metadata read/write | off on mainnet |
+
+When a flag is off, the gated endpoints return `404` (not `403`) so disabled
+features are indistinguishable from non-existent routes.
 
 ### 1. Fuzzy Search for Public Usernames
 **Endpoint:** `GET /username/search`
@@ -13,10 +66,21 @@ Allows users to search for public profiles using fuzzy matching with similarity 
 **Query Parameters:**
 - `query` (required): Search term (minimum 2 characters)
 - `limit` (optional): Maximum results (default: 10, range: 1-100)
+- `cursor` (optional): Opaque pagination cursor
 
 **Response:**
 ```json
 {
+  "results": [
+    {
+      "id": "uuid",
+      "username": "alice",
+      "publicKey": "GBXGQ55JMQ4L2B6E7S8Y9Z0A1B2C3D4E5F6G7H8I7YWR",
+      "similarityScore": 95,
+      "lastActiveAt": "2025-03-27T10:00:00Z",
+      "createdAt": "2025-02-19T08:00:00Z"
+    }
+  ],
   "profiles": [
     {
       "id": "uuid",
@@ -27,9 +91,14 @@ Allows users to search for public profiles using fuzzy matching with similarity 
       "createdAt": "2025-02-19T08:00:00Z"
     }
   ],
-  "total": 1
+  "total": 1,
+  "nextCursor": null,
+  "hasMore": false
 }
 ```
+
+`results` and `profiles` are the same array; `profiles` is retained as a
+deprecated alias for older clients and will be removed in a future release.
 
 **Search Algorithm:**
 - **Primary:** PostgreSQL `pg_trgm` extension with `word_similarity()` for advanced trigram-based fuzzy matching
@@ -44,11 +113,23 @@ Returns creator profiles ranked by recent transaction volume.
 **Query Parameters:**
 - `timeWindowHours` (optional): Time window in hours (default: 24, range: 1-720)
 - `limit` (optional): Maximum creators (default: 10, range: 1-100)
+- `cursor` (optional): Opaque pagination cursor
 
 **Response:**
 ```json
 {
-  "creators": [
+  "results": [
+    {
+      "id": "uuid",
+      "username": "toptrader",
+      "publicKey": "GDXYZ...",
+      "transactionVolume": 75000,
+      "transactionCount": 200,
+      "lastActiveAt": "2025-03-27T10:00:00Z",
+      "createdAt": "2025-02-19T08:00:00Z"
+    }
+  ],
+  "profiles": [
     {
       "id": "uuid",
       "username": "toptrader",
@@ -60,15 +141,27 @@ Returns creator profiles ranked by recent transaction volume.
     }
   ],
   "timeWindowHours": 24,
-  "calculatedAt": "2025-03-27T12:00:00Z"
+  "calculatedAt": "2025-03-27T12:00:00Z",
+  "nextCursor": null,
+  "hasMore": false
 }
 ```
 
 **Ranking Algorithm:**
 - Aggregates payment records from `payment_records` table
 - Counts both sender and receiver activity
-- Sorted by total USD volume in the time window
 - Only includes profiles with "Public Profile" enabled
+- Final score is a weighted sum of normalized signals:
+
+| Signal | Weight | Notes |
+| --- | --- | --- |
+| USD transaction volume | 0.50 | Sum over the time window |
+| Transaction count | 0.30 | Distinct payments, sender + receiver |
+| Recency of last activity | 0.15 | Decays linearly over the window |
+| Profile completeness | 0.05 | Verified metadata present |
+
+- Ties are broken by `lastActiveAt` descending, then `username` ascending for
+  deterministic pagination.
 
 ### 3. Toggle Public Profile Visibility
 **Endpoint:** `POST /username/toggle-public`

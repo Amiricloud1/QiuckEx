@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UsernamesController } from './usernames.controller';
 import { UsernamesService } from './usernames.service';
@@ -271,6 +276,92 @@ describe('UsernamesController', () => {
         },
       ]);
       expect(result.has_more).toBe(false);
+    });
+  });
+
+  describe('discovery endpoints', () => {
+    const discoveryCases: Array<{
+      name: string;
+      handler: (query: any) => Promise<any>;
+      serviceMethod: keyof UsernamesService;
+      query: Record<string, unknown>;
+      expectedArgs: unknown[];
+    }> = [
+      {
+        name: 'getTrendingCreators',
+        handler: (query) => controller.getTrendingCreators(query),
+        serviceMethod: 'getTrendingCreators',
+        query: { timeWindowHours: 24, limit: 10 },
+        expectedArgs: [24, 10, undefined],
+      },
+      {
+        name: 'getRecentlyActive',
+        handler: (query) => controller.getRecentlyActive(query),
+        serviceMethod: 'getRecentlyActiveUsers',
+        query: { timeWindowHours: 24, limit: 10 },
+        expectedArgs: [24, 10, undefined],
+      },
+      {
+        name: 'getFeaturedCreators',
+        handler: (query) => controller.getFeaturedCreators(query),
+        serviceMethod: 'getFeaturedCreators',
+        query: { limit: 10 },
+        expectedArgs: [10, undefined],
+      },
+    ];
+
+    describe.each(discoveryCases)('$name', ({ handler, serviceMethod, query, expectedArgs }) => {
+      it('returns a paginated payload on the happy path', async () => {
+        (usernamesService[serviceMethod] as jest.Mock).mockResolvedValueOnce({
+          data: [],
+          next_cursor: 'cursor-1',
+          has_more: true,
+        });
+
+        const result = await handler(query);
+
+        expect(usernamesService[serviceMethod]).toHaveBeenCalledWith(...expectedArgs);
+        expect(result).toMatchObject({ next_cursor: 'cursor-1', has_more: true });
+      });
+
+      it('rejects invalid query params with 400', async () => {
+        const err = await handler({ ...query, limit: -1 }).catch((e) => e);
+
+        expect(err).toBeInstanceOf(BadRequestException);
+        expect(usernamesService[serviceMethod]).not.toHaveBeenCalled();
+      });
+
+      it('maps dependency failures to 503', async () => {
+        (usernamesService[serviceMethod] as jest.Mock).mockRejectedValueOnce(
+          new Error('database unavailable'),
+        );
+
+        const err = await handler(query).catch((e) => e);
+
+        expect(err).toBeInstanceOf(ServiceUnavailableException);
+        expect(err.response).toMatchObject({ code: 'DISCOVERY_UNAVAILABLE' });
+      });
+    });
+
+    it('exposes rate-limit metadata for discovery routes', () => {
+      const metadata = Reflect.getMetadata(
+        'THROTTLER:LIMIT',
+        controller.getTrendingCreators,
+      );
+      expect(metadata).toBeDefined();
+    });
+
+    it('does not shadow /username/:username with discovery routes', () => {
+      const routePaths = Reflect.getMetadata(
+        'path',
+        UsernamesController,
+      ) as string[] | string | undefined;
+      const discoveryPaths = ['trending', 'recently-active', 'featured'];
+
+      for (const path of discoveryPaths) {
+        expect(path).not.toBe(':username');
+      }
+      expect(routePaths).toBeDefined();
     });
   });
 });

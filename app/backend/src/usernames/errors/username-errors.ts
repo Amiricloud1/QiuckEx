@@ -13,6 +13,8 @@ export enum UsernameErrorCode {
   NOT_FOUND = 'USERNAME_NOT_FOUND',
   /** Claim signature is invalid, expired, or not backed by a Stellar account. */
   CLAIM_INVALID = 'USERNAME_CLAIM_INVALID',
+  /** Discovery dependency (e.g. Supabase) is unavailable. */
+  DISCOVERY_UNAVAILABLE = 'USERNAME_DISCOVERY_UNAVAILABLE',
 }
 
 export class UsernameConflictError extends Error {
@@ -54,5 +56,15 @@ export class UsernameClaimInvalidError extends Error {
   constructor(message = 'Username claim signature is invalid or expired') {
     super(message);
     this.name = 'UsernameClaimInvalidError';
+  }
+}
+
+export class UsernameDiscoveryUnavailableError extends Error {
+  constructor(
+    message = 'Username discovery service is temporarily unavailable',
+    public readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'UsernameDiscoveryUnavailableError';
   }
 }
