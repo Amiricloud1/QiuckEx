@@ -172,19 +172,134 @@ export class UsernamesService {
     | { status: "updated"; profile: EditableProfileRecord }
     | { status: "conflict" | "not_found" }
   > {
-    return this.supabase.updateProfileSettings(
+    const normalized = this.normalizeUsername(dto.username);
+    const startedAt = Date.now();
+
+    // Enforce ownership: the caller must own the username they are editing.
+    const owned = await this.listByPublicKey(dto.publicKey);
+    const existing = owned.find((u) => u.username === normalized);
+
+    if (!existing) {
+      this.logProfileUpdate("not_found", normalized, dto.publicKey, startedAt, {
+        reason: "ownership_or_missing",
+      });
+      return { status: "not_found" };
+    }
+
+    const current = await this.supabase.getProfileSettings(dto.publicKey);
+    const currentRecord = current.find((p) => p.username === normalized);
+
+    if (!currentRecord) {
+      this.logProfileUpdate("not_found", normalized, dto.publicKey, startedAt, {
+        reason: "settings_missing",
+      });
+      return { status: "not_found" };
+    }
+
+    const nextSettings = {
+      profile_primary_color: dto.primaryColor,
+      avatar_url: dto.avatarUrl?.trim() || null,
+      bio: dto.bio,
+      twitter_handle: dto.twitterHandle,
+      discord_handle: dto.discordHandle,
+      github_handle: dto.githubHandle,
+    };
+
+    // Idempotency: identical payload at the same version is a no-op.
+    if (
+      currentRecord.profile_version === dto.profileVersion &&
+      this.isSameProfileSettings(currentRecord, nextSettings)
+    ) {
+      this.logProfileUpdate("noop", normalized, dto.publicKey, startedAt, {
+        version: dto.profileVersion,
+      });
+      return { status: "updated", profile: currentRecord };
+    }
+
+    // Optimistic concurrency: only apply when the stored version matches.
+    if (currentRecord.profile_version !== dto.profileVersion) {
+      this.logProfileUpdate("conflict", normalized, dto.publicKey, startedAt, {
+        expectedVersion: dto.profileVersion,
+        actualVersion: currentRecord.profile_version,
+      });
+      return { status: "conflict" };
+    }
+
+    const result = await this.supabase.updateProfileSettings(
       dto.publicKey,
-      this.normalizeUsername(dto.username),
+      normalized,
       dto.profileVersion,
-      {
-        profile_primary_color: dto.primaryColor,
-        avatar_url: dto.avatarUrl?.trim() || null,
-        bio: dto.bio,
-        twitter_handle: dto.twitterHandle,
-        discord_handle: dto.discordHandle,
-        github_handle: dto.githubHandle,
-      },
+      nextSettings,
     );
+
+    if (result.status === "updated") {
+      this.logProfileUpdate("updated", normalized, dto.publicKey, startedAt, {
+        version: dto.profileVersion,
+        nextVersion: dto.profileVersion + 1,
+      });
+    } else {
+      this.logProfileUpdate(result.status, normalized, dto.publicKey, startedAt, {
+        expectedVersion: dto.profileVersion,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Compare persisted profile settings against an incoming payload to detect
+   * idempotent (no-op) updates.
+   */
+  private isSameProfileSettings(
+    current: EditableProfileRecord,
+    next: {
+      profile_primary_color: string | null;
+      avatar_url: string | null;
+      bio: string | null;
+      twitter_handle: string | null;
+      discord_handle: string | null;
+      github_handle: string | null;
+    },
+  ): boolean {
+    const normalize = (value: string | null | undefined) =>
+      value === undefined || value === null || value === "" ? null : value;
+
+    return (
+      normalize(current.profile_primary_color) ===
+        normalize(next.profile_primary_color) &&
+      normalize(current.avatar_url) === normalize(next.avatar_url) &&
+      normalize(current.bio) === normalize(next.bio) &&
+      normalize(current.twitter_handle) === normalize(next.twitter_handle) &&
+      normalize(current.discord_handle) === normalize(next.discord_handle) &&
+      normalize(current.github_handle) === normalize(next.github_handle)
+    );
+  }
+
+  /**
+   * Structured logging/metrics for profile settings updates.
+   */
+  private logProfileUpdate(
+    outcome: "updated" | "conflict" | "not_found" | "noop",
+    username: string,
+    publicKey: string,
+    startedAt: number,
+    extra: Record<string, unknown> = {},
+  ): void {
+    const payload = {
+      event: "profile_settings_update",
+      outcome,
+      username,
+      publicKey,
+      durationMs: Date.now() - startedAt,
+      ...extra,
+    };
+    if (outcome === "updated" || outcome === "noop") {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(payload));
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn(JSON.stringify(payload));
+    }
   }
 
   async searchDiscovery(

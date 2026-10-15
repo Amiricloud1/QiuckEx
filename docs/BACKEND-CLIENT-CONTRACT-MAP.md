@@ -84,6 +84,7 @@ Mainnet submission is gated behind `TESTNET_CONTRACT_WRITES_FLAG` (same flag use
 | Screen / feature | Endpoint | Owning backend module | Request → response summary |
 |---|---|---|---|
 | Public profile page (`app/[username]/page.tsx`) | `GET /username/:username` | `usernames` (`usernames.controller.ts`) | Path param → `{ id, username, publicKey, isPublic, lastActiveAt, createdAt }`; private profiles return only `{ username, isPublic: false }`; 404 if unknown |
+| Profile editing (`settings/profile/page.tsx`) | `PATCH /username/profile` | `usernames` (`usernames.controller.ts`) | Authenticated profile update; see [Profile update contract](#profile-update-contract-patch-usernameprofile) |
 | Pay page (`pay/PaymentPageClient.tsx`) + SSR OG previews (`lib/og-metadata.ts`) | `GET /payment-links/status?username&amount&asset&memo&acceptedAssets` | `links` (`payment-link.controller.ts`) | Query params → `PaymentLinkStatusDto` (active / expired / paid / refunded) |
 | Link generator (`generator/page.tsx`) | `GET /stellar/verified-assets` | `stellar` (`stellar.controller.ts`) | → `AssetListResponseDto` (verified assets + TOML branding metadata) |
 | Link generator — wallet capability discovery | `GET /stellar/wallet-capabilities?publicKey` | `stellar` | → `WalletCapabilitiesDto`; drives unsupported-wallet UI gating (see above) |
@@ -116,6 +117,77 @@ Mainnet submission is gated behind `TESTNET_CONTRACT_WRITES_FLAG` (same flag use
 | Session bootstrap (`services/session-bootstrap.ts`) | `GET /session/bootstrap` (Bearer = publicKey) | `session` (`session.controller.ts`) | Runtime configuration, active feature flags, unread count, and authenticated account context; degrades safely when offline |
 | In-app feedback (`services/feedback.ts`) | ⚠️ `POST /feedback` | — | **No backend controller.** Client intentionally degrades to an exportable payload on failure |
 | Share receipt (`src/screens/ReceiptScreen.tsx`, `hooks/useShareReceipt.ts`) | `${baseUrl}/tx/:receiptHash` | — | A **web** share URL, not an API call. Note the actual receipts API is `GET /v1/receipts/tx/:txHash` — don't confuse the two |
+
+## Profile update contract (`PATCH /username/profile`)
+
+Owned by the `usernames` module (`app/backend/src/usernames/usernames.controller.ts`). Unlike the public `GET /username/:username` read, this route is **authenticated**: the caller proves ownership of the profile's Stellar key by signing the request (self-custody — the backend never receives a secret key).
+
+### Request
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `username` | string | yes | The profile being edited; must resolve to the authenticated `publicKey`. |
+| `publicKey` | string | yes | Stellar public key of the profile owner; must match the signature. |
+| `displayName` | string \| null | no | Omit to leave unchanged; `null` clears it. |
+| `bio` | string \| null | no | Max 280 chars; omit to leave unchanged; `null` clears it. |
+| `avatarUrl` | string \| null | no | Must be an `https://` URL; omit to leave unchanged; `null` clears it. |
+| `isPublic` | boolean | no | Toggles public visibility of the profile. |
+| `signature` | string | yes | Base64 signature over the canonical payload (see below). |
+| `version` | integer | yes | Optimistic-concurrency token; see [Version semantics](#version-semantics). |
+
+Only the fields present in the body are mutated; absent fields are left untouched (partial update). Sending an explicit `null` for a nullable field clears it.
+
+### Canonical signing payload
+
+The signature is computed over the deterministic string:
+
+```
+PATCH /username/profile\n{username}\n{publicKey}\n{version}\n{sha256(canonicalJson(fields))}
+```
+
+where `fields` is the subset of mutable fields present in the request, serialized with sorted keys. This binds the signature to the exact edit and the version it was based on, so a replayed signature cannot be reused against a different version.
+
+### Response
+
+`200 OK` → the updated profile:
+
+```json
+{
+  "id": "…",
+  "username": "alice",
+  "publicKey": "G…",
+  "displayName": "Alice",
+  "bio": "…",
+  "avatarUrl": "https://…",
+  "isPublic": true,
+  "version": 8,
+  "lastActiveAt": "…",
+  "createdAt": "…",
+  "updatedAt": "…"
+}
+```
+
+The response always includes the new `version`, which the client must retain for its next update.
+
+### Version semantics
+
+- `version` is a monotonically increasing integer per profile, starting at `1` on creation.
+- Every successful `PATCH` increments it by exactly one and returns the new value.
+- The client must send the `version` it last observed. If it is stale, the write is rejected with `409 PROFILE_VERSION_CONFLICT` and the current profile is returned in the error `fields` so the client can re-apply its edit.
+- A `PATCH` that changes nothing (all provided values equal current values) is a no-op: it returns `200` with the **unchanged** version and does not increment it.
+
+### Errors
+
+| Condition | HTTP | `code` |
+|---|---|---|
+| Missing/malformed field, bad `avatarUrl` scheme, bio too long | 400 | `VALIDATION_ERROR` |
+| Missing/invalid `signature` | 401 | `PROFILE_SIGNATURE_INVALID` |
+| `publicKey` does not own `username` | 403 | `FORBIDDEN` |
+| Unknown `username` | 404 | `PROFILE_NOT_FOUND` |
+| Stale `version` | 409 | `PROFILE_VERSION_CONFLICT` |
+| Rate limit exceeded | 429 | `RATE_LIMITED` |
+
+Errors use the global envelope `{ code, message, fields? }`; `PROFILE_VERSION_CONFLICT` populates `fields.current` with the latest profile.
 
 ## Known mismatches & payload drift
 

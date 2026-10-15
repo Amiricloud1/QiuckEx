@@ -70,6 +70,8 @@ tags:
     description: Audit log querying and retention (admin)
   - name: feature-flags
     description: Feature flag evaluation and admin management
+  - name: profile
+    description: Profile settings management (versioned, optimistic concurrency)
 
 security:
   - ApiKeyAuth: []
@@ -2323,6 +2325,131 @@ paths:
           description: Retention applied
 
   # ---------------------------------------------------------------------------
+  # Profile Settings
+  # ---------------------------------------------------------------------------
+  /profile/settings:
+    get:
+      tags: [profile]
+      operationId: getProfileSettings
+      summary: Get profile settings for the authenticated user
+      description: >
+        Returns the caller's profile settings together with the current
+        `version` used for optimistic concurrency control. Clients must send
+        this version back on updates.
+      responses:
+        "200":
+          description: Profile settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ProfileNotOwned"
+
+    patch:
+      tags: [profile]
+      operationId: updateProfileSettings
+      summary: Update profile settings
+      description: >
+        Partially updates the caller's profile settings. The request MUST
+        include the `version` previously returned by GET. If the stored
+        version differs, the update is rejected with `409 PROFILE_CONFLICT`
+        and the current version is returned in the error details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileSettingsRequest"
+      responses:
+        "200":
+          description: Profile settings updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileSettingsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ProfileNotOwned"
+        "409":
+          $ref: "#/components/responses/ProfileConflict"
+
+  /profile/settings/{publicKey}:
+    get:
+      tags: [profile]
+      operationId: getProfileSettingsByPublicKey
+      summary: Get profile settings for a specific wallet
+      description: >
+        Returns profile settings for the given Stellar public key. Only the
+        owner of the profile may read non-public fields; otherwise a
+        `403 PROFILE_NOT_OWNED` error is returned.
+      parameters:
+        - name: publicKey
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^G[A-Z0-9]{55}$"
+          description: Stellar public key (G...)
+      responses:
+        "200":
+          description: Profile settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ProfileNotOwned"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      tags: [profile]
+      operationId: replaceProfileSettings
+      summary: Replace profile settings for a specific wallet
+      description: >
+        Fully replaces the profile settings for the given wallet. Requires the
+        caller to own the profile and to supply the current `version`. A stale
+        version yields `409 PROFILE_CONFLICT`.
+      parameters:
+        - name: publicKey
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^G[A-Z0-9]{55}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileSettingsRequest"
+      responses:
+        "200":
+          description: Profile settings replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileSettingsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ProfileNotOwned"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ProfileConflict"
+
+  # ---------------------------------------------------------------------------
   # Feature Flags
   # ---------------------------------------------------------------------------
   /admin/feature-flags:
@@ -2433,6 +2560,47 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Authentication required or credentials invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: UNAUTHORIZED
+              message: Authentication is required to access this resource.
+    ProfileNotOwned:
+      description: >
+        The authenticated caller does not own the requested profile
+        (`403 PROFILE_NOT_OWNED`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: PROFILE_NOT_OWNED
+              message: You do not have permission to access this profile.
+    ProfileConflict:
+      description: >
+        Optimistic concurrency conflict (`409 PROFILE_CONFLICT`). The supplied
+        `version` does not match the stored version; the current version is
+        returned in `error.details.currentVersion`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error:
+              code: PROFILE_CONFLICT
+              message: Profile settings were modified by another request.
+              details:
+                currentVersion: 7
+                providedVersion: 5
 
   # -------------------------------------------------------------------------
   # Schemas
@@ -3668,6 +3836,122 @@ components:
         deliveryMethod:
           type: string
           enum: [webhook, email, download]
+
+    # --- Profile Settings ---
+    ProfileSettings:
+      type: object
+      properties:
+        publicKey:
+          type: string
+          example: GBXGQ55JMQ4L2B6E7S8Y9Z0A1B2C3D4E5F6G7H8I7YWR
+        displayName:
+          type: string
+          maxLength: 64
+          nullable: true
+        bio:
+          type: string
+          maxLength: 280
+          nullable: true
+        avatarUrl:
+          type: string
+          format: uri
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        locale:
+          type: string
+          example: en-US
+          nullable: true
+        timezone:
+          type: string
+          example: UTC
+          nullable: true
+        isPublic:
+          type: boolean
+          description: Whether the profile is discoverable in public search.
+        notificationChannels:
+          type: array
+          items:
+            type: string
+            enum: [email, telegram, push, webhook]
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    ProfileSettingsResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          allOf:
+            - $ref: "#/components/schemas/ProfileSettings"
+            - type: object
+              required: [version]
+              properties:
+                version:
+                  type: integer
+                  minimum: 1
+                  description: >
+                    Monotonic version of the profile settings. Send this value
+                    back on updates to detect concurrent modifications.
+                  example: 7
+                createdAt:
+                  type: string
+                  format: date-time
+                updatedAt:
+                  type: string
+                  format: date-time
+
+    UpdateProfileSettingsRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: >
+            The version the client last observed. Must match the stored version
+            or the request fails with `409 PROFILE_CONFLICT`.
+          example: 7
+        displayName:
+          type: string
+          maxLength: 64
+          nullable: true
+        bio:
+          type: string
+          maxLength: 280
+          nullable: true
+        avatarUrl:
+          type: string
+          format: uri
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        locale:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+        isPublic:
+          type: boolean
+        notificationChannels:
+          type: array
+          items:
+            type: string
+            enum: [email, telegram, push, webhook]
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
 
     # --- Feature Flags ---
     UpdateFeatureFlagRequest:

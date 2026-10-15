@@ -582,6 +582,29 @@ Policy of record: [../../docs/policies/ASSET-LISTING-POLICY.md](../../docs/polic
 
 Policy of record: [../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md](../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md).
 
+### Profiles (`profile`)
+
+| Code | HTTP Status | Description |
+|---|---|---|
+| `PROFILE_CONFLICT` | 409 | The profile was modified concurrently; the supplied version/ETag is stale |
+| `PROFILE_NOT_OWNED` | 403 | The authenticated caller does not own the target profile |
+| `PROFILE_MALFORMED` | 400 | Profile payload failed structural validation (check `fields`) |
+| `PROFILE_DEPENDENCY_FAILURE` | 502 | A downstream dependency (registry/storage) failed while serving the profile |
+| `PROFILE_IDEMPOTENCY_CONFLICT` | 409 | `Idempotency-Key` reused with a different payload |
+
+Resolution guidance:
+
+- `PROFILE_CONFLICT` — re-fetch the profile, merge your changes onto the latest
+  version, and retry with the refreshed version/ETag. Do not blind-retry.
+- `PROFILE_NOT_OWNED` — authenticate as the profile owner; ownership cannot be
+  delegated. Verify you are using the correct API key for the target profile.
+- `PROFILE_MALFORMED` — inspect `error.fields` for per-field messages, correct
+  the payload, and resubmit. This is not retryable without a change.
+- `PROFILE_DEPENDENCY_FAILURE` — retry with exponential backoff; if it persists,
+  contact support with the `request_id`. Safe to retry (idempotent reads).
+- `PROFILE_IDEMPOTENCY_CONFLICT` — generate a fresh `Idempotency-Key` for the new
+  payload, or reuse the original payload with the original key.
+
 ## HTTP Status Code Summary
 
 | Status | Meaning | Common Codes |
@@ -591,12 +614,12 @@ Policy of record: [../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md](../../d
 | 204 | No Content | Successful DELETE operations |
 | 400 | Bad Request | `VALIDATION_ERROR`, `USERNAME_INVALID`, `STELLAR_INVALID_*` |
 | 401 | Unauthorized | `UNAUTHORIZED` |
-| 403 | Forbidden | `FORBIDDEN`, `USERNAME_LIMIT_EXCEEDED` |
+| 403 | Forbidden | `FORBIDDEN`, `USERNAME_LIMIT_EXCEEDED`, `PROFILE_NOT_OWNED` |
 | 404 | Not Found | `NOT_FOUND`, `USERNAME_NOT_FOUND`, `LINK_NOT_FOUND` |
-| 409 | Conflict | `USERNAME_TAKEN`, `LINK_ALREADY_PAID`, `LISTING_ALREADY_ACTIVE` |
+| 409 | Conflict | `USERNAME_TAKEN`, `LINK_ALREADY_PAID`, `LISTING_ALREADY_ACTIVE`, `PROFILE_CONFLICT`, `PROFILE_IDEMPOTENCY_CONFLICT` |
 | 410 | Gone | `LINK_EXPIRED`, `LINK_CANCELLED` |
 | 422 | Unprocessable | `STELLAR_TRANSACTION_FAILED`, `BID_BELOW_MINIMUM`, `LINK_LIMIT_EXCEEDED` |
 | 429 | Rate Limited | `RATE_LIMIT_EXCEEDED` |
 | 500 | Server Error | `INTERNAL_SERVER_ERROR` |
-| 502 | Bad Gateway | `STELLAR_NETWORK_ERROR`, `WEBHOOK_DELIVERY_FAILED` |
+| 502 | Bad Gateway | `STELLAR_NETWORK_ERROR`, `WEBHOOK_DELIVERY_FAILED`, `PROFILE_DEPENDENCY_FAILURE` |
 | 503 | Unavailable | `CONTRACT_NOT_CONFIGURED`, Horizon backoff |

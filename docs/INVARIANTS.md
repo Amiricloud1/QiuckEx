@@ -127,6 +127,24 @@ at which it stops being accepted.
 
 ---
 
+## Profile Settings Invariants
+
+These invariants govern the off-chain profile settings path. A profile update
+never moves funds, but it may not silently clobber a concurrent edit or lose a
+version bump. See [CAPABILITY-MAP.md](./CAPABILITY-MAP.md) for the owning
+modules.
+
+INV-21: Profile Version Monotonicity
+
+A profile update MUST only succeed if the client-supplied version matches the
+currently stored version. On success the stored version MUST increment
+atomically with the write, so that two concurrent updates carrying the same
+version cannot both succeed: exactly one wins and the other MUST be rejected as
+a conflict. A version MUST NOT decrease, be reused, or be skipped as a side
+effect of an unrelated update.
+
+---
+
 ## Architectural Enforcement References
 
 - [CUSTODY-TRUST-THREAT-MODEL.md](./CUSTODY-TRUST-THREAT-MODEL.md): Full threat modeling, trust assumptions, and cryptographic custody boundary enforcement for INV-01 through INV-10.
