@@ -346,6 +346,111 @@ describe("Smoke Tests - Deployment Validation", () => {
     });
   });
 
+  // ─── Correlation ID propagation ────────────────────────────────────────────
+
+  describe("Correlation ID Propagation", () => {
+    const CORRELATION_HEADER = "x-correlation-id";
+
+    it("GET /health response carries X-Correlation-ID header", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/health")
+        .expect(200);
+
+      expect(response.headers[CORRELATION_HEADER]).toBeDefined();
+      expect(typeof response.headers[CORRELATION_HEADER]).toBe("string");
+      expect(response.headers[CORRELATION_HEADER].length).toBeGreaterThan(0);
+    });
+
+    it("GET /ready response carries X-Correlation-ID header", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/ready")
+        .expect(200);
+
+      expect(response.headers[CORRELATION_HEADER]).toBeDefined();
+    });
+
+    it("POST /links/metadata success response carries X-Correlation-ID header", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/links/metadata")
+        .send({ amount: 100, asset: "XLM" })
+        .expect(200);
+
+      expect(response.headers[CORRELATION_HEADER]).toBeDefined();
+    });
+
+    it("GET /username/search response carries X-Correlation-ID header", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/username/search")
+        .query({ query: "alice", limit: 5 })
+        .expect(200);
+
+      expect(response.headers[CORRELATION_HEADER]).toBeDefined();
+    });
+
+    it("GET /asset-metadata response carries X-Correlation-ID header", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/asset-metadata")
+        .query({ asset_code: "XLM" })
+        .expect(200);
+
+      expect(response.headers[CORRELATION_HEADER]).toBeDefined();
+    });
+
+    it("error responses carry X-Correlation-ID matching the body request_id", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/links/metadata")
+        .send({ amount: "invalid" })
+        .expect(400);
+
+      const headerValue = response.headers[CORRELATION_HEADER];
+      expect(headerValue).toBeDefined();
+
+      const requestId =
+        response.body?.error?.request_id ?? response.body?.request_id;
+      expect(requestId).toBeDefined();
+      expect(requestId).toBe(headerValue);
+    });
+
+    it("404 error responses carry X-Correlation-ID matching the body request_id", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/non-existent-endpoint")
+        .expect(404);
+
+      const headerValue = response.headers[CORRELATION_HEADER];
+      expect(headerValue).toBeDefined();
+
+      const requestId =
+        response.body?.error?.request_id ?? response.body?.request_id;
+      expect(requestId).toBeDefined();
+      expect(requestId).toBe(headerValue);
+    });
+
+    it("propagates a client-supplied X-Correlation-ID on success responses", async () => {
+      const supplied = "smoke-test-correlation-id-12345";
+      const response = await request(app.getHttpServer())
+        .get("/health")
+        .set("X-Correlation-ID", supplied)
+        .expect(200);
+
+      expect(response.headers[CORRELATION_HEADER]).toBe(supplied);
+    });
+
+    it("propagates a client-supplied X-Correlation-ID on error responses", async () => {
+      const supplied = "smoke-test-correlation-id-error";
+      const response = await request(app.getHttpServer())
+        .post("/links/metadata")
+        .set("X-Correlation-ID", supplied)
+        .send({ amount: "invalid" })
+        .expect(400);
+
+      expect(response.headers[CORRELATION_HEADER]).toBe(supplied);
+
+      const requestId =
+        response.body?.error?.request_id ?? response.body?.request_id;
+      expect(requestId).toBe(supplied);
+    });
+  });
+
   // ─── Error handling ────────────────────────────────────────────────────────
 
   describe("Error Handling", () => {

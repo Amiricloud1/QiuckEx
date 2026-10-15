@@ -177,10 +177,15 @@ useClass: OrganizationRoleGuard,
 })
 export class AppModule implements NestModule {
 configure(consumer: MiddlewareConsumer) {
+  // Correlation id must be established first so every subsequent middleware,
+  // guard, interceptor, and filter can attach it to logs and error responses.
+  consumer
+    .apply(CorrelationIdMiddleware)
+    .forRoutes("*");
+
   consumer
     .apply(
       MetricsMiddleware,
-      CorrelationIdMiddleware,
       OrganizationContextMiddleware,
       ShadowTrafficMiddleware,
     )
