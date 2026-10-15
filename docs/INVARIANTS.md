@@ -2,27 +2,48 @@ Core Financial Invariants
 INV-01: Conservation of Value
 
 The sum of all balances (escrow + merchant + customer + fees) MUST equalthe total value deposited into the system. No value is created or destroyedoutside of explicit protocol actions.
+
+- Test file: `tests/invariants/conservation_of_value.test.ts`
+- Tests: `conserves total value across fund/fulfill`, `conserves total value across fund/refund`, `conserves total value across disputed settlement`
 INV-02: No Unauthorized Withdrawals
 
 Only the designated recipient (merchant on fulfill, customer on refund,arbiter on dispute resolution) may claim payment funds. No third partycan withdraw funds from an escrow they are not a party to.
+
+- Test file: `tests/invariants/authorization.test.ts`
+- Tests: `rejects fulfill from non-merchant`, `rejects refund from non-customer`, `rejects dispute resolution from non-arbiter`, `rejects withdrawal by unrelated third party`
 INV-03: No Overpayment
 
 The total amount released from a payment MUST NOT exceed the originaldeposited amount plus any permitted fee adjustments. Each payment releasesat most its principal.
+
+- Test file: `tests/invariants/no_overpayment.test.ts`
+- Tests: `release never exceeds deposited principal`, `cumulative releases bounded by principal plus permitted fees`
 INV-04: No Double-Settlement
 
 A payment can transition to a terminal state (Fulfilled, Refunded,DisputeResolved) exactly once. No payment can be fulfilled AND refunded,or settled twice.
+
+- Test file: `tests/invariants/no_double_settlement.test.ts`
+- Tests: `rejects fulfill after refund`, `rejects refund after fulfill`, `rejects second settlement of any terminal state`
 State Machine Invariants
 INV-05: Valid State Transitions Only
 
 The payment state machine only permits:  Created → Funded → Fulfilled  Created → Funded → Disputed → DisputeResolved  Created → Funded → Refunded (after expiry)  Created → Expired (if never funded)
 
 No backward or cross-branch transitions are valid.
+
+- Test file: `tests/invariants/state_transitions.test.ts`
+- Tests: `permits only the documented transition graph`, `rejects backward transitions`, `rejects cross-branch transitions`
 INV-06: Expiry Monotonicity
 
 A payment whose expiry timestamp has passed cannot be fulfilled. It canonly be refunded or disputed (if already in dispute).
+
+- Test file: `tests/invariants/expiry_monotonicity.test.ts`
+- Tests: `rejects fulfill after expiry`, `permits refund after expiry`, `permits dispute resolution for pre-expiry dispute`
 INV-07: Nonce Uniqueness
 
 No two payments can share the same (creator, nonce) pair. Replay of apreviously consumed nonce MUST be rejected.
+
+- Test file: `tests/invariants/nonce_uniqueness.test.ts`
+- Tests: `rejects duplicate (creator, nonce) pair`, `rejects replay of consumed nonce`
 INV-08: Authorization Consistency
 
 The actor performing a transition MUST be authorized:
@@ -32,13 +53,22 @@ The actor performing a transition MUST be authorized:
     Only customer can request refund
     Only designated arbiter can resolve dispute
 
+- Test file: `tests/invariants/authorization_consistency.test.ts`
+- Tests: `only creator can fund`, `only merchant can fulfill`, `only customer can request refund`, `only designated arbiter can resolve dispute`
+
 Edge-Case Invariants
 INV-09: Zero-Amount Payment
 
 Zero-amount payments follow the same state machine but MUST NOT resultin any token transfers.
+
+- Test file: `tests/invariants/zero_amount.test.ts`
+- Tests: `zero-amount payment follows state machine`, `zero-amount payment performs no token transfers`
 INV-10: Fee Ceiling
 
 Protocol fees collected per payment MUST NOT exceed the configuredmaximum fee percentage of the payment amount.
+
+- Test file: `tests/invariants/fee_ceiling.test.ts`
+- Tests: `fees never exceed configured maximum percentage`, `fee ceiling enforced across all settlement paths`
 
 ---
 

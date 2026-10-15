@@ -31,6 +31,8 @@ mod governance;
 mod governance_test;
 mod hook;
 #[cfg(test)]
+mod invariants_test;
+#[cfg(test)]
 mod metadata_test;
 pub mod nonce;
 #[cfg(test)]

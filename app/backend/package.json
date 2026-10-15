@@ -72,6 +72,7 @@
     "soroban:deploy": "ts-node scripts/soroban-deploy.ts",
     "docs:export": "ts-node scripts/export-openapi.ts",
     "docs:export:check": "pnpm run docs:export && git diff --exit-code -- openapi.json",
+    "test:invariants": "jest --config jest.config.ts --testPathPattern=invariant",
     "test:fuzz": "jest --config jest.fuzz.config.ts",
     "test:fuzz:ci": "jest --config jest.fuzz.config.ts --runInBand",
     "test:smoke": "jest --config jest.e2e.config.ts test/smoke.e2e-spec.ts --testTimeout=30000",
