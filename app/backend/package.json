@@ -35,6 +35,7 @@
   },
   "devDependencies": {
     "@nestjs/cli": "^12.0.3",
+    "@sentry/cli": "^2.42.2",
     "@nestjs/testing": "^12.0.3",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.6.1",
@@ -79,6 +80,7 @@
     "test:smoke:all": "jest --config jest.e2e.config.ts test/smoke*.e2e-spec.ts --testTimeout=30000",
     "test:mutation": "node scripts/run-mutation-tests.js",
     "db:verify-migrations": "node scripts/verify-migrations.js",
-    "test:perf:horizon": "node scripts/horizon-perf-regression.js"
+    "test:perf:horizon": "node scripts/horizon-perf-regression.js",
+    "sentry:sourcemaps": "sentry-cli sourcemaps upload --release=$SENTRY_RELEASE dist"
   }
 }
