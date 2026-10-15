@@ -75,6 +75,14 @@ jobs:
           SUPABASE_URL: https://test.supabase.co
           SUPABASE_ANON_KEY: test-key
 
+      - name: Run Fuzz Tests
+        run: pnpm run test:fuzz:ci
+        env:
+          NODE_ENV: test
+          STELLAR_NETWORK: testnet
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_ANON_KEY: test-key
+
       - name: Database Migration Forward and Rollback Verification
         run: pnpm run db:verify-migrations
 
