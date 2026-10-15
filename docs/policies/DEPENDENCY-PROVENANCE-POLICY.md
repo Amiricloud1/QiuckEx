@@ -6,7 +6,9 @@ dependency gate (`scripts/deps/check.mjs`) on every pull request.
 
 Related: [DEPENDENCY-LICENSE-POLICY.md](./DEPENDENCY-LICENSE-POLICY.md) (which
 licences are permitted), [../security.md](../security.md) (secret scanning),
-[../GOVERNANCE.md](../GOVERNANCE.md) (policy index and review cadence).
+[../GOVERNANCE.md](../GOVERNANCE.md) (policy index and review cadence), and the
+dependency-review CI gate
+([.github/workflows/dependency-review.yml](../../.github/workflows/dependency-review.yml)).
 
 ## 1. Objective
 
@@ -112,3 +114,45 @@ node --test scripts/deps/__tests__/            # tests for the gate itself
 The gate has **no dependencies** and never installs or imports dependency code,
 so it runs on a fresh clone before `pnpm install` and gives the same verdict on
 an untrusted fork. Exit codes: `0` clean, `1` errors, `2` usage error.
+
+## 6. Dependency-review CI gate
+
+`scripts/deps/check.mjs` validates provenance and lockfile integrity, but it
+does not consult vulnerability or licence databases. That is the job of the
+dependency-review gate, defined in
+[.github/workflows/dependency-review.yml](../../.github/workflows/dependency-review.yml),
+which runs on every pull request that touches a lockfile.
+
+**What it blocks.** The gate fails the pull request when the diff introduces:
+
+| Finding | Severity / identifier | Why it blocks |
+|---|---|---|
+| Known vulnerability | High or Critical CVE (any GHSA advisory) | A dependency that runs inside a transaction-signing product must not carry an unpatched high-severity flaw. |
+| Denied licence | `GPL-2.0`, `AGPL-3.0` | Copyleft terms are incompatible with how QuickEx is distributed. See [DEPENDENCY-LICENSE-POLICY.md](./DEPENDENCY-LICENSE-POLICY.md) for the full permitted-licence list. |
+
+Lower-severity advisories (Low, Moderate) are reported as annotations but do
+not fail the check, so they are visible in review without blocking unrelated
+work.
+
+**Which lockfiles it covers.** The workflow watches every lockfile in the
+workspace:
+
+- `pnpm-lock.yaml` (the pnpm workspace — backend, frontend, mobile)
+- `app/contract/Cargo.lock` (the Soroban contract)
+
+A change to any of these triggers the review; a change to none of them skips
+it.
+
+**Exception process.** A blocked dependency may be merged only with a recorded
+exception:
+
+1. Record the **GHSA ID** of the advisory (or the denied licence identifier)
+   in the pull request description.
+2. Record a **business justification** — why the dependency is required, what
+   the exposure is, and what compensating control applies.
+3. Obtain **maintainer sign-off** — an approving review from a maintainer, as
+   defined in [../GOVERNANCE.md](../GOVERNANCE.md).
+
+The exception is scoped to that advisory and that dependency. It does not
+waive the provenance or lockfile rules in sections 2 and 3, and it does not
+carry over to a future advisory against the same package.

@@ -239,6 +239,7 @@ Contributions are welcome and encouraged to help evolve QuickEx! To get started:
   - Filter by **package name**, not directory: `pnpm --filter @quickex/backend test:unit`, `pnpm --filter frontend lint`.
   - `app/contract` sits outside the pnpm workspace — use `cargo test` / `cargo clippy` there.
   - If a change alters what is actually shipped, update the matching row in [docs/CAPABILITY-MAP.md](docs/CAPABILITY-MAP.md) in the same PR.
+- **Dependency review**: PRs that introduce new npm or Cargo dependencies are automatically checked for high/critical CVEs and disallowed licenses. Any exception must be recorded with a GHSA ID and a written justification. See [docs/policies/DEPENDENCY-PROVENANCE-POLICY.md](docs/policies/DEPENDENCY-PROVENANCE-POLICY.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow.
 
