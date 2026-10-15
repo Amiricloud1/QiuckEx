@@ -9,6 +9,7 @@ import { DiscoveryCacheService } from "./cache/discovery-cache.service";
 import { UsernameRankingService } from "./username-ranking.service";
 import { UsernameReconciliationService } from "./username-reconciliation.service";
 import { UsernameReconciliationController } from "./username-reconciliation.controller";
+import { KeyRotationService } from "./key-rotation.service";
 
 @Module({
   imports: [SupabaseModule, FeatureFlagsModule, MetricsModule],
@@ -18,7 +19,13 @@ import { UsernameReconciliationController } from "./username-reconciliation.cont
     DiscoveryCacheService,
     UsernameRankingService,
     UsernameReconciliationService,
+    KeyRotationService,
   ],
-  exports: [UsernamesService, UsernameRankingService, UsernameReconciliationService],
+  exports: [
+    UsernamesService,
+    UsernameRankingService,
+    UsernameReconciliationService,
+    KeyRotationService,
+  ],
 })
 export class UsernamesModule {}

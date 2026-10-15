@@ -344,6 +344,81 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /username/{username}/visibility:
+    get:
+      tags: [usernames]
+      operationId: getUsernameVisibility
+      summary: Get profile visibility settings
+      description: >
+        Returns the current visibility configuration for a username, including
+        whether the profile is public and which fields are exposed publicly.
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 32
+          description: Username to query
+      responses:
+        "200":
+          description: Visibility settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VisibilitySettingsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+
+    put:
+      tags: [usernames]
+      operationId: updateUsernameVisibility
+      summary: Update profile visibility settings
+      description: >
+        Updates the visibility configuration for a username. Requires the caller
+        to prove ownership of the associated wallet via a signed challenge.
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 32
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVisibilityRequest"
+      responses:
+        "200":
+          description: Visibility settings updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VisibilitySettingsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Caller does not own the username
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+=======
+
   # ---------------------------------------------------------------------------
   # Links
   # ---------------------------------------------------------------------------
@@ -1634,6 +1709,62 @@ paths:
       responses:
         "200":
           description: Key rotated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateApiKeyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Key already revoked or rotation in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimit"
+
+  /api-keys/{id}/rotations:
+    get:
+      tags: [api-keys]
+      operationId: listApiKeyRotations
+      summary: List rotation history for an API key
+      description: >
+        Returns the audit trail of key rotations, including the grace period
+        during which the previous key remains valid.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Rotation history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyRotationListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimit"
 
   # ---------------------------------------------------------------------------
   # Fiat Ramps
@@ -2433,6 +2564,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Authentication required or credentials invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
 
   # -------------------------------------------------------------------------
   # Schemas
@@ -2648,6 +2785,48 @@ components:
         publicKey:
           type: string
         isPublic:
+          type: boolean
+
+    VisibilitySettingsResponse:
+      type: object
+      properties:
+        username:
+          type: string
+          example: alice
+        isPublic:
+          type: boolean
+          description: Whether the profile is discoverable in public search
+        showTransactionVolume:
+          type: boolean
+          description: Whether aggregate transaction volume is publicly visible
+        showRecentlyActive:
+          type: boolean
+          description: Whether recent activity status is publicly visible
+        showCreatedAt:
+          type: boolean
+          description: Whether the account creation date is publicly visible
+        updatedAt:
+          type: string
+          format: date-time
+
+    UpdateVisibilityRequest:
+      type: object
+      required: [publicKey, signedChallenge]
+      properties:
+        publicKey:
+          type: string
+          pattern: "^G[A-Z0-9]{55}$"
+          description: Stellar public key that owns the username
+        signedChallenge:
+          type: string
+          description: Base64-encoded signed challenge proving ownership of publicKey
+        isPublic:
+          type: boolean
+        showTransactionVolume:
+          type: boolean
+        showRecentlyActive:
+          type: boolean
+        showCreatedAt:
           type: boolean
 
     # --- Links ---
@@ -3607,6 +3786,68 @@ components:
           minItems: 1
         owner_id:
           type: string
+
+    RotateApiKeyResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Identifier of the newly issued key
+        key:
+          type: string
+          description: Raw API key. Returned ONCE and never retrievable again.
+          example: qx_live_xxxxxxxxxxxxxxxxxxxxxxxx
+        previousKeyId:
+          type: string
+          format: uuid
+          description: Identifier of the key that was rotated out
+        previousKeyExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: End of the grace period during which the previous key still works
+        createdAt:
+          type: string
+          format: date-time
+
+    ApiKeyRotation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        previousKeyId:
+          type: string
+          format: uuid
+        newKeyId:
+          type: string
+          format: uuid
+        rotatedBy:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        gracePeriodSeconds:
+          type: integer
+          description: Duration the previous key remained valid after rotation
+        createdAt:
+          type: string
+          format: date-time
+
+    ApiKeyRotationListResponse:
+      type: object
+      properties:
+        rotations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKeyRotation"
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
 
     # --- Fiat Ramps ---
     FiatRampRequest:

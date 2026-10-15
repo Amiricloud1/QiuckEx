@@ -1273,6 +1273,35 @@ impl QuickexContract {
         storage::get_pause_status(&env)
     }
 
+    /// Rotate the privacy key for an account (**owner only**).
+    ///
+    /// Delegates to [`privacy::rotate_privacy_key`] after enforcing the pause policy
+    /// for [`EntryPoint::RotatePrivacyKey`].
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `owner` - The account whose privacy key is being rotated (must authorize)
+    /// * `new_key` - The new 32-byte privacy key
+    ///
+    /// # Errors
+    /// * `ContractPaused` - Contract is currently paused
+    pub fn rotate_privacy_key(
+        env: Env,
+        owner: Address,
+        new_key: BytesN<32>,
+    ) -> Result<(), QuickexError> {
+        admin::require_initialized(&env)?;
+        pause_policy::require_entry_allowed(&env, EntryPoint::RotatePrivacyKey)?;
+        privacy::rotate_privacy_key(&env, owner, new_key)
+    }
+
+    /// Get the current privacy key for an account (read-only).
+    ///
+    /// Returns `None` if no key has been set.
+    pub fn get_privacy_key(env: Env, owner: Address) -> Option<BytesN<32>> {
+        privacy::get_privacy_key(&env, owner)
+    }
+
     /// Read current active fee collector (rotation-aware).
     pub fn get_active_fee_collector(env: Env) -> Option<Address> {
         fee_router::active_collector(&env)

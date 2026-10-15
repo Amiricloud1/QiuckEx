@@ -68,4 +68,18 @@ export enum SorobanErrorCode {
   // ── Indexer Lag Guard ─────────────────────────────────────────────────────
   /** Indexer is lagging too far behind the network; risky operations are blocked. */
   INDEXER_LAGGING = 'INDEXER_LAGGING',
+
+  // ── Key rotation lifecycle ────────────────────────────────────────────────
+  /** A key rotation has been announced and is awaiting activation. */
+  KEY_ROTATION_ANNOUNCED = 'CONTRACT_KEY_ROTATION_ANNOUNCED',
+  /** A key rotation is within its grace period; both keys remain valid. */
+  KEY_ROTATION_GRACE_ACTIVE = 'CONTRACT_KEY_ROTATION_GRACE_ACTIVE',
+  /** A key rotation has been revoked before completion. */
+  KEY_ROTATION_REVOKED = 'CONTRACT_KEY_ROTATION_REVOKED',
+  /** A key rotation operation was replayed and rejected as a duplicate. */
+  KEY_ROTATION_REPLAY = 'CONTRACT_KEY_ROTATION_REPLAY',
+  /** No key rotation record exists for the requested key or account. */
+  KEY_ROTATION_NOT_FOUND = 'CONTRACT_KEY_ROTATION_NOT_FOUND',
+  /** A key rotation has expired and can no longer be completed. */
+  KEY_ROTATION_EXPIRED = 'CONTRACT_KEY_ROTATION_EXPIRED',
 }

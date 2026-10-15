@@ -1,5 +1,6 @@
 import { ApiProperty } from "@nestjs/swagger";
 import {
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -8,6 +9,12 @@ import {
   Min,
 } from "class-validator";
 import { IsStellarPublicKey, IsUsername } from "../validators";
+
+export enum ProfileVisibility {
+  Private = "private",
+  Unlisted = "unlisted",
+  Public = "public",
+}
 
 export class ProfileSettingsDto {
   @ApiProperty({ example: "alice_123" })
@@ -58,4 +65,19 @@ export class ProfileSettingsDto {
   @MaxLength(39)
   @Matches(/^$|^[A-Za-z0-9-]+$/)
   githubHandle!: string;
+
+  @ApiProperty({
+    required: false,
+    enum: ProfileVisibility,
+    example: ProfileVisibility.Public,
+  })
+  @IsOptional()
+  @IsEnum(ProfileVisibility)
+  visibility?: ProfileVisibility;
+
+  @ApiProperty({ required: false, minimum: 1, example: 1 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expectedVersion?: number;
 }

@@ -165,6 +165,8 @@ Useful when picking issues — these are "wire the client" opportunities, not ne
 | `POST /privacy/deletion-requests/:id/cancel` | `privacy` | Public (optional key) | Signed cancel during the cooling-off window; `DELETION_NOT_CANCELLABLE` / `DELETION_ALREADY_EXECUTED` after it |
 | `GET /privacy/deletion-requests/:id` | `privacy` | `@RequireScopes('admin')` | Status, SLA dates, per-category outcomes/holds, salted subject hash (never the raw subject) |
 | `POST /admin/privacy/retention/sweep` | `privacy` (admin-privacy.controller.ts) | `@RequireScopes('admin')` + `privacy.retention_sweep` flag + `Idempotency-Key` | `{apply?: boolean, batchSize?: number}` → run result (`planned`, `failed`, `completed`). Dry-run unless `apply: true`; `RETENTION_SWEEP_DISABLED` (403) when the flag is off |
+| `GET`/`PATCH /visibility/settings` | `visibility` (visibility.controller.ts) | Optional `X-API-Key` | → per-account visibility settings (profile, activity, balances, receipts) with defaults applied when unset; `PATCH` accepts a partial settings object and returns the merged result. No client consumer yet |
+| `GET`/`POST /visibility/rotation` | `visibility` (rotation.controller.ts) | Optional `X-API-Key` | → key-rotation schedule and history; `POST` schedules a rotation window and returns the pending rotation record. No client consumer yet |
 
 ## Planned but not fully wired
 

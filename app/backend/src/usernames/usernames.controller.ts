@@ -37,6 +37,9 @@ import {
   FeaturedUsernamesResponseDto,
   PublicProfileDto,
   ProfileSettingsDto,
+  UpdateVisibilityDto,
+  AnnounceKeyRotationDto,
+  RevokeKeyRotationDto,
 } from "../dto";
 import { UsernamesService } from "./usernames.service";
 import {
@@ -45,6 +48,9 @@ import {
   UsernameValidationError,
   UsernameErrorCode,
   UsernameClaimInvalidError,
+  KeyRotationDisabledError,
+  KeyRotationNotFoundError,
+  KeyRotationConflictError,
 } from "./errors";
 
 @ApiTags("usernames")
@@ -508,6 +514,224 @@ export class UsernamesController {
     }
   }
 
+  @Patch("visibility")
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({
+    summary: "Set profile visibility level",
+    description:
+      "Set the explicit visibility level for a username. Only the wallet " +
+      "owner can change visibility. The operation is idempotent: applying " +
+      "the same visibility level repeatedly yields the same result.",
+  })
+  @ApiBody({ type: UpdateVisibilityDto })
+  @ApiResponse({
+    status: 200,
+    description: "Visibility level updated successfully",
+  })
+  @ApiResponse({
+    status: 400,
+    description: "Invalid username format or visibility level",
+  })
+  @ApiResponse({
+    status: 403,
+    description: "Profile is not owned by this wallet",
+  })
+  @ApiResponse({
+    status: 404,
+    description: "Username not found",
+  })
+  async updateVisibility(
+    @Body() body: UpdateVisibilityDto,
+  ): Promise<{ ok: boolean; visibility: string }> {
+    try {
+      const result = await this.usernamesService.updateVisibility(
+        body.username,
+        body.publicKey,
+        body.visibility,
+      );
+      return { ok: true, visibility: result.visibility };
+    } catch (err) {
+      if (err instanceof UsernameValidationError) {
+        if (err.code === UsernameErrorCode.NOT_FOUND) {
+          throw new NotFoundException({
+            code: UsernameErrorCode.NOT_FOUND,
+            message: err.message,
+          });
+        }
+        throw new BadRequestException({
+          code: err.code,
+          message: err.message,
+        });
+      }
+      if (err instanceof ForbiddenException) {
+        throw err;
+      }
+      throw err;
+    }
+  }
+
+  @Post("key-rotation/announce")
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({
+    summary: "Announce a key rotation",
+    description:
+      "Announce an upcoming key rotation for a username. Requires the " +
+      "key-rotation feature flag to be enabled.",
+  })
+  @ApiBody({ type: AnnounceKeyRotationDto })
+  @ApiResponse({
+    status: 201,
+    description: "Key rotation announced successfully",
+  })
+  @ApiResponse({
+    status: 400,
+    description: "Invalid rotation payload",
+  })
+  @ApiResponse({
+    status: 403,
+    description: "Key rotation is disabled or not owned by this wallet",
+  })
+  @ApiResponse({
+    status: 404,
+    description: "Username not found",
+  })
+  @ApiResponse({
+    status: 409,
+    description: "A rotation is already pending for this username",
+  })
+  async announceKeyRotation(
+    @Body() body: AnnounceKeyRotationDto,
+  ) {
+    try {
+      return await this.usernamesService.announceKeyRotation(body);
+    } catch (err) {
+      if (err instanceof KeyRotationDisabledError) {
+        throw new ForbiddenException({
+          code: "KEY_ROTATION_DISABLED",
+          message: err.message,
+        });
+      }
+      if (err instanceof KeyRotationNotFoundError) {
+        throw new NotFoundException({
+          code: "KEY_ROTATION_NOT_FOUND",
+          message: err.message,
+        });
+      }
+      if (err instanceof KeyRotationConflictError) {
+        throw new ConflictException({
+          code: "KEY_ROTATION_CONFLICT",
+          message: err.message,
+        });
+      }
+      if (err instanceof UsernameValidationError) {
+        throw new BadRequestException({
+          code: err.code,
+          message: err.message,
+        });
+      }
+      throw err;
+    }
+  }
+
+  @Post("key-rotation/:id/revoke")
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({
+    summary: "Revoke a pending key rotation",
+    description:
+      "Revoke a pending key rotation by id. Requires the key-rotation " +
+      "feature flag to be enabled.",
+  })
+  @ApiBody({ type: RevokeKeyRotationDto })
+  @ApiResponse({
+    status: 200,
+    description: "Key rotation revoked successfully",
+  })
+  @ApiResponse({
+    status: 403,
+    description: "Key rotation is disabled or not owned by this wallet",
+  })
+  @ApiResponse({
+    status: 404,
+    description: "Key rotation not found",
+  })
+  @ApiResponse({
+    status: 409,
+    description: "Key rotation cannot be revoked in its current state",
+  })
+  async revokeKeyRotation(
+    @Param("id") id: string,
+    @Body() body: RevokeKeyRotationDto,
+  ) {
+    try {
+      return await this.usernamesService.revokeKeyRotation(id, body);
+    } catch (err) {
+      if (err instanceof KeyRotationDisabledError) {
+        throw new ForbiddenException({
+          code: "KEY_ROTATION_DISABLED",
+          message: err.message,
+        });
+      }
+      if (err instanceof KeyRotationNotFoundError) {
+        throw new NotFoundException({
+          code: "KEY_ROTATION_NOT_FOUND",
+          message: err.message,
+        });
+      }
+      if (err instanceof KeyRotationConflictError) {
+        throw new ConflictException({
+          code: "KEY_ROTATION_CONFLICT",
+          message: err.message,
+        });
+      }
+      if (err instanceof UsernameValidationError) {
+        throw new BadRequestException({
+          code: err.code,
+          message: err.message,
+        });
+      }
+      throw err;
+    }
+  }
+
+  @Get("key-rotation/:id")
+  @ApiOperation({
+    summary: "Get a key rotation by id",
+    description:
+      "Returns the current state of a key rotation. Requires the " +
+      "key-rotation feature flag to be enabled.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Key rotation details",
+  })
+  @ApiResponse({
+    status: 403,
+    description: "Key rotation is disabled",
+  })
+  @ApiResponse({
+    status: 404,
+    description: "Key rotation not found",
+  })
+  async getKeyRotation(@Param("id") id: string) {
+    try {
+      return await this.usernamesService.getKeyRotation(id);
+    } catch (err) {
+      if (err instanceof KeyRotationDisabledError) {
+        throw new ForbiddenException({
+          code: "KEY_ROTATION_DISABLED",
+          message: err.message,
+        });
+      }
+      if (err instanceof KeyRotationNotFoundError) {
+        throw new NotFoundException({
+          code: "KEY_ROTATION_NOT_FOUND",
+          message: err.message,
+        });
+      }
+      throw err;
+    }
+  }
+
   @Get(":username")
   @ApiOperation({
     summary: "Get profile by username",
@@ -531,6 +755,7 @@ export class UsernamesController {
         return {
           username: profile.username,
           isPublic: false,
+          visibility: profile.visibility,
         };
       }
       return {
@@ -538,6 +763,7 @@ export class UsernamesController {
         username: profile.username,
         publicKey: profile.public_key,
         isPublic: true,
+        visibility: profile.visibility,
         lastActiveAt: profile.last_active_at || profile.created_at,
         createdAt: profile.created_at,
       };
