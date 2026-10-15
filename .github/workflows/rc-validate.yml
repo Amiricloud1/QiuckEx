@@ -4,11 +4,16 @@ name: Release Candidate Validation
 # scripts/rc-validate.sh — the same script a contributor runs locally — so
 # "green locally" and "green in CI" cannot mean different things.
 #
+# This is the standalone, manual/nightly entry point to the gate. The CD
+# pipeline also runs an `rc-validate` job that invokes the exact same
+# `pnpm rc:validate` command and honours the same exit-code contract; the two
+# are kept in sync deliberately. To avoid duplicate or conflicting runs, this
+# workflow does NOT trigger on pull_request — per-PR early warning is owned by
+# the CD pipeline's `rc-validate` job.
+#
 # Triggers:
 #   workflow_dispatch — the manual release-candidate gate, including the slow
 #                      stages that per-PR CI does not run.
-#   pull_request      — `--quick` only, on backend and CI path changes. This is
-#                      an early-warning signal, not the release gate.
 #   schedule          — nightly regression run against main, so a candidate is
 #                      never validated only at the moment someone remembers to.
 on:
@@ -26,12 +31,6 @@ on:
         description: "Ref to validate"
         type: string
         default: "main"
-  pull_request:
-    branches: [main]
-    paths:
-      - "app/backend/**"
-      - "scripts/rc-validate.sh"
-      - ".github/workflows/rc-validate.yml"
   schedule:
     # 04:23 UTC daily.
     - cron: "23 4 * * *"
@@ -40,8 +39,10 @@ permissions:
   contents: read
 
 concurrency:
+  # Shared with the CD pipeline's `rc-validate` job so the two entry points
+  # cannot run the gate against the same ref at the same time.
   group: rc-validate-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -100,16 +101,15 @@ jobs:
         run: |
           set -euo pipefail
           ARGS=()
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            ARGS+=(--quick)
-          fi
           if [ -n "${{ inputs.stage }}" ]; then
             ARGS+=(--stage "${{ inputs.stage }}")
           fi
           if [ "${{ inputs.allow_skip }}" = "true" ]; then
             ARGS+=(--allow-skip)
           fi
-          ./scripts/rc-validate.sh "${ARGS[@]}"
+          # Same command and exit-code contract as the CD pipeline's
+          # `rc-validate` job: non-zero exit fails the gate.
+          pnpm rc:validate "${ARGS[@]}"
 
       - name: Upload gate report
         if: always()
