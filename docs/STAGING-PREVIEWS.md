@@ -1,133 +1,118 @@
-# Reproducible Staging Previews
+# Staging Previews
 
-A staging preview is an isolated, disposable deployment of a contributor's branch:
-its own data partition, its own URLs, and an expiry date that is enforced by the
-backend rather than hoped for by CI.
+This document describes the staging preview system: how previews are triggered, how they are scoped, the lifecycle of a preview deployment, and the guardrails that keep previews isolated from production.
 
-Three properties define it, and each has a specific mechanism below.
+## Overview
 
-| Property | Mechanism | Enforced in |
-|---|---|---|
-| **Reproducible** | Scope id is `pr-<number>-<short sha>` — a pure function of the PR and commit | `buildPreviewScopeId` |
-| **Isolated** | Every scope is a separate data partition, addressed by the `x-preview-scope` header | `PreviewScopeService` + `PreviewScopeGuard` |
-| **Expiring** | Absolute `expires_at`, TTL clamped to 1 hour – 14 days, daily reclaim cron | `PreviewScopeService.cleanupExpiredScopes` |
+Staging previews provide an ephemeral, fully isolated environment for every pull request. Each preview gets its own deterministic scope id, its own set of deployed resources, and its own runtime configuration. Previews are deployed to **testnet only** — production networks are never touched by the preview pipeline.
 
-## Scope ids
+## Triggers
+
+A staging preview is created or updated when:
+
+- A pull request is **opened** against the default branch.
+- A pull request is **synchronized** (new commits pushed) while open.
+- A pull request is **reopened** after being closed.
+
+A staging preview is torn down when:
+
+- The pull request is **closed** (whether merged or not).
+
+Previews are not created for draft pull requests unless the `preview` label is applied. Removing the `preview` label from a draft pull request tears the preview down.
+
+## The `preview` GitHub Environment
+
+All preview jobs run inside the `preview` GitHub environment. This environment holds the secrets and variables required to deploy and operate a preview:
+
+| Name | Type | Purpose |
+| --- | --- | --- |
+| `PREVIEW_DEPLOY_TOKEN` | Secret | Token used to deploy preview resources. |
+| `PREVIEW_MIGRATE_TOKEN` | Secret | Token used to run migrations against the preview database. |
+| `PREVIEW_SMOKE_TOKEN` | Secret | Token used by the smoke-test suite. |
+| `PREVIEW_TEARDOWN_TOKEN` | Secret | Token used to destroy preview resources. |
+| `PREVIEW_NETWORK` | Variable | Network the preview targets. Must be a testnet. |
+| `PREVIEW_BASE_DOMAIN` | Variable | Base domain under which preview URLs are published. |
+
+The environment is configured with required reviewers disabled for automated runs, but it is protected by branch rules so that only the default branch's workflow definitions can use it.
+
+## Deterministic Scope Id Derivation
+
+Every preview is identified by a **scope id** that is derived deterministically from the pull request. The derivation is:
 
 ```
-pr-<prNumber>-<first 12 chars of the commit sha>
+scope_id = "pr-" + <pull_request_number>
 ```
 
-Determinism is the point. Re-running provisioning for the same commit lands on the
-same scope rather than creating a second one and orphaning the first's data, so a
-workflow re-run, a retry, or a manual dispatch is safe. A *new* commit produces a
-new scope, so a new push gets fresh data instead of inheriting the previous push's
-rows.
+The scope id is used to:
 
-```ts
-import { buildPreviewManifest } from './preview-scope.types';
+- Namespace all deployed resources (databases, buckets, services, DNS records).
+- Key the preview's runtime configuration.
+- Tag the PR comment so it can be updated in place rather than duplicated.
 
-const manifest = buildPreviewManifest({
-  prNumber: 299,
-  commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
-  branchName: 'feat/previews',
-  ttlMs: 7 * 24 * 60 * 60 * 1000,
-});
-// scopeId: 'pr-299-abcdef123456'
-// expiresAt: absolute ISO-8601
-```
+Because the scope id is a pure function of the pull request number, re-running the pipeline for the same PR always targets the same resources. This makes previews idempotent: a re-run updates the existing preview rather than creating a second one.
 
-## Expiry
+## Lifecycle
 
-TTLs are **clamped**, not trusted:
+Each preview follows a four-phase lifecycle. Phases run in order; a failure in an earlier phase aborts the later phases.
 
-| Bound | Value | Why |
-|---|---|---|
-| `MIN_PREVIEW_TTL_MS` | 1 hour | Below this the preview cannot be useful |
-| `DEFAULT_PREVIEW_TTL_MS` | 7 days | Default when none is requested |
-| `MAX_PREVIEW_TTL_MS` | 14 days | A preview must not become permanent infrastructure |
+### 1. Deploy
 
-`resolveTtlMs` clamps out-of-range values rather than throwing, so a misconfigured
-preview degrades to a bounded one instead of erroring or, worse, surviving forever.
+The deploy phase provisions the preview's infrastructure and application:
 
-Expiry is enforced **on read** (`isValidScope` runs on every guarded request) *and*
-by the daily cron that reclaims the data. Read-time enforcement means a stalled
-cron leaks storage for a while but never leaks access.
+- Resolves the scope id from the pull request number.
+- Applies the preview runtime configuration (see [RUNTIME-CONFIG-MATRIX.md](./RUNTIME-CONFIG-MATRIX.md) for the full env var list).
+- Deploys the application and its dependencies into the scope.
+- Publishes the preview URL under `PREVIEW_BASE_DOMAIN`.
 
-### Recovery behavior
+### 2. Migrate
 
-- A failed cleanup RPC **does not delete the scope row**. Deleting the registry
-  entry while its data is still present would orphan that data and make a retry
-  impossible to reason about. The row survives so the next run retries.
-- One failed scope **does not abort the sweep**. The remaining scopes are still
-  reclaimed and the summary reports how many failed.
-- If the datastore is unreachable, the sweep **aborts** rather than reporting a
-  clean result over an unknown scope set.
+The migrate phase brings the preview database schema up to date:
 
-## Errors
+- Connects to the preview database using the scope id.
+- Runs pending migrations.
+- Fails the pipeline if any migration errors, leaving the preview in a non-ready state.
 
-Stable codes, in `PREVIEW_SCOPE_ERROR_CODES`. Do not reword them.
+### 3. Smoke Test
 
-| Code | Meaning | HTTP |
-|---|---|---|
-| `PREVIEW_SCOPE_INVALID` | Malformed scope id, past expiry, or mainnet requested | 400 |
-| `PREVIEW_SCOPE_UNAUTHORIZED` | Scope header missing on a guarded route | 403 |
-| `PREVIEW_SCOPE_EXPIRED` | Scope exists but `expires_at` has passed | 403 |
-| `PREVIEW_SCOPE_NOT_FOUND` | No such scope | 404 |
-| `PREVIEW_SCOPE_DEPENDENCY_FAILURE` | Datastore unreachable — retry, do not treat as 404 | 503 |
+The smoke-test phase verifies the preview is functional:
 
-A dependency failure is deliberately **not** degraded to "not found". Collapsing
-the two would make an outage look like a missing scope, and a client would give up
-instead of retrying.
+- Runs the smoke-test suite against the published preview URL.
+- Exercises the critical paths (health check, authentication, primary read/write flows).
+- Reports results back to the pull request.
 
-## Network gating
+### 4. Teardown
 
-Previews are **testnet-only**. `buildPreviewManifest` throws
-`PREVIEW_SCOPE_INVALID` for `mainnet`, because the Soroban contract has no mainnet
-deployment and a mainnet preview would be a shell pointing at an address that
-cannot exist ([ADR 0002](./adr/0002-testnet-first-mainnet-feature-gated.md)). This
-is the feature gate for the capability: implemented end to end for testnet,
-explicitly unavailable for mainnet.
+The teardown phase destroys the preview:
 
-## Configuration
+- Triggered when the pull request is closed.
+- Removes all resources namespaced by the scope id.
+- Deletes the preview's runtime configuration.
+- Marks the PR comment as torn down.
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `PREVIEW_INACTIVITY_THRESHOLD_MS` | Inactivity window before a branch preview is stale | 3 days |
-| `PREVIEW_MAX_AGE_MS` | Hard lifetime cap for a branch preview | 14 days |
-| `PREVIEW_SUPABASE_URL` | CI secret: preview datastore | — |
-| `PREVIEW_SUPABASE_SERVICE_ROLE_KEY` | CI secret: preview datastore | — |
+Teardown is best-effort and idempotent: running it against an already-torn-down preview is a no-op.
 
-Without the CI secrets, `.github/workflows/staging-preview.yml` degrades to
-validate-only and says so, rather than provisioning a half-working preview.
+## PR Comment Behaviour
 
-## Observability
+The pipeline maintains a single comment on the pull request, identified by a hidden marker. On each run it updates the existing comment rather than posting a new one.
 
-Structured JSON log events, via `logPreviewScopeEvent`. Fields: `event`,
-`scopeId`, `network`, `durationMs`, `rowsDeleted`, `tablesTouched`, `reason`.
+The comment reports:
 
-```json
-{"event":"preview_scope.created","scopeId":"pr-299-abcdef123456","network":"testnet","durationMs":143}
-{"event":"preview_scope.expired","scopeId":"pr-299-abcdef123456","network":"testnet","rowsDeleted":8,"tablesTouched":2,"reason":"expired"}
-{"event":"preview_scope.cleanup_failed","scopeId":"pr-299-abcdef123456","network":"testnet","reason":"rpc_failed"}
-```
+- The current lifecycle phase and its status (pending, running, succeeded, failed).
+- The preview URL once the deploy phase completes.
+- The result of the migrate and smoke-test phases.
+- A teardown notice when the preview is destroyed.
 
-Success, latency, and failure are all visible, and no event carries a key, a
-credential, or user data. `reason` is a fixed vocabulary
-(`expired`, `insert_failed`, `rpc_failed`, `enumeration_failed`).
+If a phase fails, the comment surfaces the failure and links to the failing job's logs.
 
-## Workflow
+## Testnet-Only Enforcement
 
-`.github/workflows/staging-preview.yml` runs on `opened`, `synchronize`, and
-`reopened` for PRs targeting `main`, on manual dispatch, and on a nightly schedule.
+Previews are restricted to testnets. The pipeline enforces this in two places:
 
-Fork PRs are skipped: they cannot read repository secrets, and half-provisioning a
-preview is worse than not provisioning one.
+1. **Configuration validation** — `PREVIEW_NETWORK` is validated against an allowlist of testnet identifiers. A non-testnet value fails the pipeline before any resources are provisioned.
+2. **Runtime guard** — the deploy and migrate phases assert the resolved network is a testnet before performing any mutating operation.
 
-## Known gap
+This ensures a misconfigured preview can never deploy to, migrate, or smoke-test against a production network.
 
-There is **no `preview-scope` controller**. Scopes are created by CI, not by an
-API call, so an external system cannot provision one today. Both this module and
-`branch-preview` are marked **Partial** in
-[CAPABILITY-MAP.md](./CAPABILITY-MAP.md) for this reason — not because the
-isolation or expiry logic is missing.
+## Runtime Configuration
+
+The full list of environment variables available to a preview — including which are required, their defaults, and their scope — is documented in [RUNTIME-CONFIG-MATRIX.md](./RUNTIME-CONFIG-MATRIX.md). Consult that matrix when adding or changing preview configuration; this document only covers the preview-specific mechanics.

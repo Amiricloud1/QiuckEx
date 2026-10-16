@@ -128,6 +128,38 @@ const ERROR_MAPPINGS: Array<{
     message: 'The admin address provided is invalid.',
   },
 
+  // ── Rotation ──────────────────────────────────────────────────────────────
+  {
+    pattern: /rotation.*not.*found|rotation.*missing/i,
+    code: SorobanErrorCode.ROTATION_NOT_FOUND,
+    message: 'The rotation entry was not found. It may have already been completed or never created.',
+  },
+  {
+    pattern: /rotation.*already.*(completed|executed|finalized|finalised)|already.*rotated/i,
+    code: SorobanErrorCode.ROTATION_ALREADY_COMPLETED,
+    message: 'This rotation has already been completed and cannot be modified.',
+  },
+  {
+    pattern: /rotation.*not.*(pending|active)|not.*pending.*rotation/i,
+    code: SorobanErrorCode.ROTATION_NOT_PENDING,
+    message: 'The rotation is not in a pending state and cannot be acted upon.',
+  },
+  {
+    pattern: /rotation.*(expired|timed?\s*out)|(expired|timed?\s*out).*rotation/i,
+    code: SorobanErrorCode.ROTATION_EXPIRED,
+    message: 'The rotation has expired and can no longer be executed.',
+  },
+  {
+    pattern: /rotation.*unauthori[sz]ed|unauthori[sz]ed.*rotation/i,
+    code: SorobanErrorCode.ROTATION_UNAUTHORIZED,
+    message: 'You are not authorised to perform this rotation operation.',
+  },
+  {
+    pattern: /invalid.*rotation|rotation.*invalid/i,
+    code: SorobanErrorCode.INVALID_ROTATION,
+    message: 'The rotation parameters provided are invalid.',
+  },
+
   // ── Version mismatch ──────────────────────────────────────────────────────
   {
     pattern: /version.*mismatch|schema.*version|unsupported.*version/i,

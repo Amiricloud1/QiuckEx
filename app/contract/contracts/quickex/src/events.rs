@@ -387,6 +387,29 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         ],
         schema_version: EVENT_SCHEMA_VERSION,
     },
+    EventSchema {
+        name: "KeyRotationAnnounced",
+        topics: &[EVENT_TOPIC_ADMIN, "KeyRotationAnnounced", "rotation_id"],
+        payload_keys: &[
+            "activate_after",
+            "new_key",
+            "schema_version",
+            "timestamp",
+        ],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
+        name: "KeyRotationActivated",
+        topics: &[EVENT_TOPIC_ADMIN, "KeyRotationActivated", "rotation_id"],
+        payload_keys: &["new_key", "schema_version", "timestamp"],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
+        name: "KeyRotationRevoked",
+        topics: &[EVENT_TOPIC_ADMIN, "KeyRotationRevoked", "rotation_id"],
+        payload_keys: &["reason", "schema_version", "timestamp"],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
 ];
 
 #[allow(dead_code)]
@@ -418,6 +441,21 @@ pub const EVENT_COMPATIBILITY: &[EventCompatibility] = &[
     },
     EventCompatibility {
         name: "PauseFlagsChanged",
+        current_version: EVENT_SCHEMA_VERSION,
+        compatible_versions: &[EVENT_SCHEMA_VERSION],
+    },
+    EventCompatibility {
+        name: "KeyRotationAnnounced",
+        current_version: EVENT_SCHEMA_VERSION,
+        compatible_versions: &[EVENT_SCHEMA_VERSION],
+    },
+    EventCompatibility {
+        name: "KeyRotationActivated",
+        current_version: EVENT_SCHEMA_VERSION,
+        compatible_versions: &[EVENT_SCHEMA_VERSION],
+    },
+    EventCompatibility {
+        name: "KeyRotationRevoked",
         current_version: EVENT_SCHEMA_VERSION,
         compatible_versions: &[EVENT_SCHEMA_VERSION],
     },
@@ -1682,6 +1720,82 @@ pub(crate) fn publish_dispute_evidence_submitted(
         schema_version: EVENT_SCHEMA_VERSION,
         evidence_hash,
         submitted_by,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ---- Key rotation lifecycle events ----
+
+#[contractevent(topics = ["TOPIC_ADMIN", "KeyRotationAnnounced"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyRotationAnnouncedEvent {
+    #[topic]
+    pub rotation_id: u64,
+
+    pub schema_version: u32,
+    pub new_key: BytesN<32>,
+    pub activate_after: u64,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_key_rotation_announced(
+    env: &Env,
+    rotation_id: u64,
+    new_key: BytesN<32>,
+    activate_after: u64,
+) {
+    KeyRotationAnnouncedEvent {
+        rotation_id,
+        schema_version: EVENT_SCHEMA_VERSION,
+        new_key,
+        activate_after,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent(topics = ["TOPIC_ADMIN", "KeyRotationActivated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyRotationActivatedEvent {
+    #[topic]
+    pub rotation_id: u64,
+
+    pub schema_version: u32,
+    pub new_key: BytesN<32>,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_key_rotation_activated(
+    env: &Env,
+    rotation_id: u64,
+    new_key: BytesN<32>,
+) {
+    KeyRotationActivatedEvent {
+        rotation_id,
+        schema_version: EVENT_SCHEMA_VERSION,
+        new_key,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent(topics = ["TOPIC_ADMIN", "KeyRotationRevoked"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyRotationRevokedEvent {
+    #[topic]
+    pub rotation_id: u64,
+
+    pub schema_version: u32,
+    pub reason: Symbol,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_key_rotation_revoked(env: &Env, rotation_id: u64, reason: Symbol) {
+    KeyRotationRevokedEvent {
+        rotation_id,
+        schema_version: EVENT_SCHEMA_VERSION,
+        reason,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);

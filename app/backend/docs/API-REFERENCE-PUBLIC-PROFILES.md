@@ -516,12 +516,156 @@ curl -X PUT "http://localhost:3000/username/alice/metadata" \
 
 ---
 
-### 8. Feature Gate
+### 8. Visibility Levels
 
-Verified profile metadata is gated behind the `PROFILE_METADATA_ENABLED`
-configuration flag. When the flag is off (the default on mainnet until the
-rollout issue is closed), the metadata endpoints return `404 Not Found` and
-no metadata is read or written. Testnet enables the flag by default.
+Public profiles support three visibility levels. The level is stored on the
+`username → publicKey` mapping and only controls discoverability; it never
+affects payment routing or key custody.
+
+| Level | Discoverable in search/trending | Metadata readable | Notes |
+|-------|--------------------------------|-------------------|-------|
+| `public` | ✅ Yes | ✅ Yes | Default for new profiles |
+| `unlisted` | ❌ No | ✅ Yes (by direct URL) | Reachable via direct link/QR only |
+| `private` | ❌ No | ❌ No (`404`) | Hidden from all discovery surfaces |
+
+#### Setting the Visibility Level
+
+Visibility is set via `POST /username/toggle-public` using the `visibility`
+field. The legacy `isPublic` boolean is still accepted and maps to
+`public` (`true`) or `private` (`false`).
+
+```json
+{
+  "username": "alice",
+  "publicKey": "GBXGQ55JMQ4L2B6E7S8Y9Z0A1B2C3D4E5F6G7H8I7YWR",
+  "visibility": "unlisted"
+}
+```
+
+#### Visibility Status Codes
+
+- `200 OK` - Visibility updated
+- `400 Bad Request` - Unknown visibility level or malformed username
+- `403 Forbidden` - `publicKey` does not own `username`
+- `404 Not Found` - Username does not exist
+- `503 Service Unavailable` - Dependency unavailable; safe to retry
+
+#### Visibility Semantics
+
+- Changing visibility is idempotent and never mutates the `publicKey`.
+- `private` profiles return `404 Not Found` on metadata reads so their
+  existence is not disclosed.
+- `unlisted` profiles are excluded from search and trending but remain
+  resolvable for payment links and QR codes.
+
+---
+
+### 9. Rotation Lifecycle
+
+Public keys attached to a username can be rotated without breaking existing
+payment links. Rotation is a two-phase lifecycle: **announce** then
+**commit**.
+
+#### Phase 1 — Announce
+
+`POST /username/rotate/announce` registers a pending rotation to a new
+`publicKey`. The old key remains active and continues to receive payments
+until the commit phase completes.
+
+```json
+{
+  "username": "alice",
+  "currentPublicKey": "GBXGQ55JMQ4L2B6E7S8Y9Z0A1B2C3D4E5F6G7H8I7YWR",
+  "newPublicKey": "GDXYZ123ABC456DEF789GHI012JKL345MNO678PQR901STU",
+  "idempotencyKey": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+}
+```
+
+#### Phase 2 — Commit
+
+`POST /username/rotate/commit` finalizes the rotation. The mapping is
+switched atomically and the previous key is retained as a redirect alias for
+a configurable grace period.
+
+```json
+{
+  "username": "alice",
+  "newPublicKey": "GDXYZ123ABC456DEF789GHI012JKL345MNO678PQR901STU",
+  "idempotencyKey": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
+}
+```
+
+#### Rotation States
+
+| State | Description |
+|-------|-------------|
+| `none` | No rotation in progress |
+| `announced` | Pending rotation registered; old key still active |
+| `committed` | New key active; old key retained as redirect alias |
+| `expired` | Grace period elapsed; old key alias removed |
+
+#### Rotation Status Codes
+
+- `200 OK` - Phase applied (or idempotent replay)
+- `400 Bad Request` - Malformed key, missing idempotency key, or invalid state transition
+- `401 Unauthorized` - Missing or invalid signature over the rotation payload
+- `403 Forbidden` - `currentPublicKey` does not own `username`
+- `404 Not Found` - `username` does not exist
+- `409 Conflict` - Rotation already announced/committed, or `newPublicKey` already in use
+- `410 Gone` - Commit attempted after the announce window expired
+- `503 Service Unavailable` - Dependency unavailable; safe to retry with the same idempotency key
+
+#### Rotation Invariants
+
+- The old key remains valid for payments until `commit` succeeds; there is
+  never a window where a payment link stops resolving.
+- Announce and commit are each applied in a single transaction; on failure
+  the transaction is rolled back and the previous state remains active.
+- A rotation cannot be committed without a prior announce for the same
+  `newPublicKey`.
+
+---
+
+### 10. Stable Error Codes
+
+All public-profile endpoints return a stable machine-readable `code` field
+alongside the HTTP status. Clients should branch on `code`, not on the
+human-readable `message`.
+
+```json
+{
+  "error": {
+    "code": "USERNAME_TAKEN",
+    "message": "The requested username is already taken.",
+    "requestId": "req_8f2c1e2a7b4d4c8e"
+  }
+}
+```
+
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `INVALID_USERNAME` | 400 | Username failed format/normalization rules |
+| `INVALID_VISIBILITY` | 400 | Unknown visibility level |
+| `MISSING_IDEMPOTENCY_KEY` | 400 | Required `idempotencyKey` absent |
+| `UNAUTHORIZED_SIGNATURE` | 401 | Signature missing or invalid |
+| `NOT_OWNER` | 403 | Caller does not own the username |
+| `USERNAME_NOT_FOUND` | 404 | Username does not exist (or is `private`) |
+| `USERNAME_TAKEN` | 409 | Target username already registered |
+| `VERSION_CONFLICT` | 409 | `expectedVersion` mismatch |
+| `ROTATION_STATE_CONFLICT` | 409 | Invalid rotation state transition |
+| `ROTATION_WINDOW_EXPIRED` | 410 | Announce window elapsed before commit |
+| `RATE_LIMITED` | 429 | Caller exceeded a rate limit |
+| `DEPENDENCY_UNAVAILABLE` | 503 | DB/registry/cache unavailable; retryable |
+
+---
+
+### 11. Feature Gate
+
+Verified profile metadata and the rotation lifecycle are gated behind the
+`PROFILE_METADATA_ENABLED` configuration flag. When the flag is off (the
+default on mainnet until the rollout issue is closed), the metadata and
+rotation endpoints return `404 Not Found` and no metadata is read or written.
+Testnet enables the flag by default.
 
 ---
 
@@ -529,9 +673,23 @@ no metadata is read or written. Testnet enables the flag by default.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PROFILE_METADATA_ENABLED` | `false` (mainnet), `true` (testnet) | Feature gate for verified profile metadata |
+| `PROFILE_METADATA_ENABLED` | `false` (mainnet), `true` (testnet) | Feature gate for verified profile metadata and rotation |
 | `PROFILE_METADATA_CACHE_TTL_SECONDS` | `300` | Safety-net TTL for metadata cache entries |
 | `PROFILE_METADATA_MAX_LINKS` | `5` | Maximum number of links per profile |
+| `PROFILE_ROTATION_GRACE_PERIOD_HOURS` | `72` | How long the old key remains a redirect alias after commit |
+| `PROFILE_ROTATION_ANNOUNCE_WINDOW_HOURS` | `24` | Maximum time between announce and commit |
+
+---
+
+## Migration
+
+- **Visibility levels**: existing profiles default to `public`; no backfill
+  is required. The legacy `isPublic` column is retained and kept in sync
+  during the transition.
+- **Rotation lifecycle**: no schema backfill is required; profiles with no
+  rotation history report state `none`.
+- **Stable error codes**: additive only. Existing clients that read only the
+  HTTP status continue to work; the `code` field is new.
 
 ---
 
@@ -541,7 +699,16 @@ no metadata is read or written. Testnet enables the flag by default.
    with the `PUT`/`GET` examples above.
 2. Confirm cache invalidation by writing metadata and immediately reading it
    back; the read must reflect the new `version`.
-3. Roll out to mainnet by flipping the flag; no migration is required because
-   metadata is stored alongside the existing username mapping.
-4. To roll back, disable the flag; metadata endpoints return `404` and the
-   existing `username → publicKey` mapping is unaffected.
+3. Exercise the rotation lifecycle on testnet: announce, verify the old key
+   still resolves, commit, then verify the old key resolves via the redirect
+   alias until the grace period elapses.
+4. Verify visibility levels: set a profile to `unlisted` and confirm it is
+   absent from search/trending but resolvable by direct URL; set it to
+   `private` and confirm metadata reads return `404`.
+5. Roll out to mainnet by flipping the flag; no migration is required because
+   metadata, visibility, and rotation state are stored alongside the existing
+   username mapping.
+6. To roll back, disable the flag; metadata and rotation endpoints return
+   `404` and the existing `username → publicKey` mapping is unaffected.
+   In-flight rotations remain in their last committed state and can be
+   resumed once the flag is re-enabled.

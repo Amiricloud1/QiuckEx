@@ -24,6 +24,7 @@ describe('UsernamesService', () => {
     getRecentlyActiveUsers: jest.fn(),
     getFeaturedUsernames: jest.fn(),
     getPublicProfile: jest.fn(),
+    updateProfileSettings: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -340,6 +341,148 @@ describe('UsernamesService', () => {
     });
   });
 
+  describe('updateProfileSettings', () => {
+    const PUBLIC_KEY = 'GBXGQ55JMQ4L2B6E7S8Y9Z0A1B2C3D4E5F6G7H8I7YWR';
+    const USERNAME = 'alice';
+
+    it('updates profile settings on the happy path', async () => {
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: 'hello',
+        avatar_url: 'https://example.com/a.png',
+        is_public: false,
+        version: 2,
+      });
+
+      const result = await service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+        display_name: 'Alice',
+        bio: 'hello',
+        avatar_url: 'https://example.com/a.png',
+        is_public: false,
+        version: 1,
+      });
+
+      expect(result).toEqual({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: 'hello',
+        avatar_url: 'https://example.com/a.png',
+        is_public: false,
+        version: 2,
+      });
+      expect(mockSupabaseService.updateProfileSettings).toHaveBeenCalledWith(
+        USERNAME,
+        PUBLIC_KEY,
+        expect.objectContaining({ version: 1 }),
+      );
+    });
+
+    it('throws a version conflict error when the stored version differs', async () => {
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce(null);
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 1,
+        }),
+      ).rejects.toThrow(UsernameConflictError);
+    });
+
+    it('throws not found / not owned when the username does not belong to the wallet', async () => {
+      mockSupabaseService.updateProfileSettings.mockRejectedValueOnce(
+        new UsernameValidationError('not owned'),
+      );
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 1,
+        }),
+      ).rejects.toThrow(UsernameValidationError);
+    });
+
+    it('is idempotent when replaying the same version and payload', async () => {
+      const row = {
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: null,
+        avatar_url: null,
+        is_public: true,
+        version: 2,
+      };
+      mockSupabaseService.updateProfileSettings.mockResolvedValue(row);
+
+      const first = await service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+        display_name: 'Alice',
+        version: 1,
+      });
+      const second = await service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+        display_name: 'Alice',
+        version: 1,
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('propagates dependency failures from SupabaseService', async () => {
+      mockSupabaseService.updateProfileSettings.mockRejectedValueOnce(
+        new Error('db down'),
+      );
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 1,
+        }),
+      ).rejects.toThrow('db down');
+    });
+
+    it('handles version boundary values', async () => {
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: null,
+        avatar_url: null,
+        is_public: true,
+        version: 1,
+      });
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 0,
+        }),
+      ).resolves.toBeDefined();
+
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: null,
+        avatar_url: null,
+        is_public: true,
+        version: Number.MAX_SAFE_INTEGER,
+      });
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: Number.MAX_SAFE_INTEGER - 1,
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+
   describe('getFeaturedCreators', () => {
     // featured_rank 5 ties between id-2/id-3; a null rank must sort last.
     const rows = [
@@ -368,6 +511,132 @@ describe('UsernamesService', () => {
 
       expect(result.data.map((r) => r.id)).toEqual(['id-3', 'id-4']);
       expect(result.has_more).toBe(false);
+    });
+
+    it('caps the featured limit at the maximum boundary', async () => {
+      mockSupabaseService.getFeaturedUsernames.mockResolvedValueOnce(rows);
+
+      await service.getFeaturedCreators(1000);
+
+      expect(mockSupabaseService.getFeaturedUsernames).toHaveBeenCalledWith(100);
+    });
+
+    it('rejects a non-positive featured limit', async () => {
+      await expect(service.getFeaturedCreators(0)).rejects.toThrow(
+        UsernameValidationError,
+      );
+    });
+  });
+
+  describe('searchDiscovery', () => {
+    const rows = [
+      { id: 'id-4', username: 'alice4', public_key: 'GAAA4', created_at: '2025-01-04T00:00:00.000Z', last_active_at: null, is_public: true },
+      { id: 'id-3', username: 'alice3', public_key: 'GAAA3', created_at: '2025-01-03T00:00:00.000Z', last_active_at: null, is_public: true },
+      { id: 'id-2', username: 'alice2', public_key: 'GAAA2', created_at: '2025-01-02T00:00:00.000Z', last_active_at: null, is_public: true },
+      { id: 'id-1', username: 'alice1', public_key: 'GAAA1', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true },
+    ];
+
+    let cache: {
+      getSearchResults: jest.Mock;
+      setSearchResults: jest.Mock;
+    };
+
+    beforeEach(() => {
+      cache = service['discoveryCache'] as unknown as typeof cache;
+    });
+
+    it('returns cached results on a cache hit without querying Supabase', async () => {
+      const cached = {
+        data: rows.slice(0, 2),
+        has_more: false,
+        next_cursor: null,
+      };
+      cache.getSearchResults.mockResolvedValueOnce(cached);
+
+      const result = await service.searchDiscovery('alice', 2);
+
+      expect(result).toEqual(cached);
+      expect(mockSupabaseService.searchPublicUsernames).not.toHaveBeenCalled();
+      expect(cache.setSearchResults).not.toHaveBeenCalled();
+    });
+
+    it('queries Supabase and populates the cache on a cache miss', async () => {
+      cache.getSearchResults.mockResolvedValueOnce(null);
+      mockSupabaseService.searchPublicUsernames.mockResolvedValueOnce(rows.slice(0, 3));
+
+      const result = await service.searchDiscovery('alice', 2);
+
+      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['id-4', 'id-3']);
+      expect(mockSupabaseService.searchPublicUsernames).toHaveBeenCalled();
+      expect(cache.setSearchResults).toHaveBeenCalledWith(
+        'alice',
+        2,
+        null,
+        expect.objectContaining({ has_more: true }),
+      );
+    });
+
+    it('applies ranking weights to order results', async () => {
+      cache.getSearchResults.mockResolvedValueOnce(null);
+      mockSupabaseService.searchPublicUsernames.mockResolvedValueOnce(rows);
+
+      const result = await service.searchDiscovery('alice', 4);
+
+      const ids = result.data.map((r: { id: string }) => r.id);
+      expect(ids).toHaveLength(4);
+      expect(new Set(ids).size).toBe(4);
+    });
+
+    it('degrades gracefully when Supabase throws, returning empty results and logging', async () => {
+      cache.getSearchResults.mockResolvedValueOnce(null);
+      const error = new Error('supabase unavailable');
+      mockSupabaseService.searchPublicUsernames.mockRejectedValueOnce(error);
+      const loggerSpy = jest
+        .spyOn(service['logger'], 'error')
+        .mockImplementation(() => undefined);
+
+      const result = await service.searchDiscovery('alice', 2);
+
+      expect(result.data).toEqual([]);
+      expect(result.has_more).toBe(false);
+      expect(result.next_cursor).toBeNull();
+      expect(loggerSpy).toHaveBeenCalled();
+    });
+
+    it('maps discovery errors to UsernameValidationError for invalid input', async () => {
+      await expect(service.searchDiscovery('', 2)).rejects.toThrow(
+        UsernameValidationError,
+      );
+    });
+  });
+
+  describe('boundary limits', () => {
+    it('caps the recently-active limit at the maximum boundary', async () => {
+      mockSupabaseService.getRecentlyActiveUsers.mockResolvedValueOnce([]);
+
+      await service.getRecentlyActiveUsers(24, 1000);
+
+      expect(mockSupabaseService.getRecentlyActiveUsers).toHaveBeenCalledWith(24, 100);
+    });
+
+    it('rejects a non-positive recently-active limit', async () => {
+      await expect(service.getRecentlyActiveUsers(24, 0)).rejects.toThrow(
+        UsernameValidationError,
+      );
+    });
+
+    it('caps the trending limit at the maximum boundary', async () => {
+      mockSupabaseService.getTrendingCreators.mockResolvedValueOnce([]);
+
+      await service.getTrendingCreators(24, 1000);
+
+      expect(mockSupabaseService.getTrendingCreators).toHaveBeenCalledWith(24, 100);
+    });
+
+    it('rejects a non-positive trending limit', async () => {
+      await expect(service.getTrendingCreators(24, 0)).rejects.toThrow(
+        UsernameValidationError,
+      );
     });
   });
 });
