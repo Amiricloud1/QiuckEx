@@ -396,9 +396,9 @@ export const envSchema = Joi.object({
     .min(0)
     .max(1)
     .optional()
-    .default(1.0)
+    .default(0.1)
     .description(
-      "Sentry performance traces sample rate (0.0 to 1.0). Default: 1.0",
+      "Sentry performance traces sample rate (0.0 to 1.0). Default: 0.1",
     ),
 
   SENTRY_PROFILES_SAMPLE_RATE: Joi.number()

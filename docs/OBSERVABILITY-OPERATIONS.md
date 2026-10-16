@@ -38,6 +38,7 @@ promoted.
 | Metrics | `src/metrics/metrics.service.ts` — nine new series | `/metrics` |
 | Notifications | `NotificationService.redeliverToChannel`, `NotificationLogRepository.getDelivery` / `resetNotificationForManualReplay` | No public contract change |
 | Feature flag | `mainnet.operator_replay`, default **disabled** | `NetworkSafetyGuard` |
+| Error tracking | Sentry — DSN configuration, release tagging, source maps, tracing, user context | See [Sentry](#sentry) |
 
 ### Database / migration
 
@@ -60,6 +61,10 @@ existing cooldown and quota configuration already read by
 | `WEBHOOK_REPLAY_QUOTA_WINDOW_MS` | `3600000` | Width of the quota window |
 | `INDEXER_LAG_THRESHOLD_LEDGERS` | see `AppConfigService` | Threshold used by the indexing SLO and alert |
 | `METRICS_ENDPOINT_TOKEN` | — | Required to scrape `/metrics` (unchanged) |
+| `SENTRY_DSN` | — | Sentry DSN. When unset, the SDK is not initialised and error reporting is a no-op. |
+| `SENTRY_RELEASE` | git SHA | Release tag attached to every event. Set to the commit SHA in CD and in the Vercel build. |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Fraction of transactions traced. 10% by default; raise deliberately, never to `1.0` in production. |
+| `SENTRY_ENVIRONMENT` | `NODE_ENV` | Environment tag (`production`, `staging`, `development`). |
 
 ---
 
@@ -178,6 +183,70 @@ An unobserved ratio is published as `NaN`, not `0`, so Prometheus distinguishes
 **Label cardinality is bounded.** `quickex_trace_context_total` records only
 whether baggage was *present* (`baggage_forwarded`), never its contents, so
 user-controlled input can never become a Prometheus label.
+
+---
+
+## Sentry
+
+Sentry is the error-tracking and performance backend. It is **additive**: it
+does not replace the Prometheus series above, and it is never on the request
+path in a way that can fail a request.
+
+### DSN configuration
+
+- The DSN is read from `SENTRY_DSN`. **When it is unset the SDK is not
+  initialised** — `Sentry.init` is skipped entirely and every capture call is a
+  no-op. Local development and CI therefore need no Sentry account, and a
+  missing DSN can never crash the process.
+- The DSN is a write-only ingest key, not a secret with read access, but it is
+  still supplied via the environment and never committed.
+- Initialisation happens once, at process start, before the HTTP server begins
+  listening, so errors thrown during bootstrap are captured.
+
+### Release tagging
+
+Every event carries a release tag so a regression can be attributed to a
+commit.
+
+- `SENTRY_RELEASE` is set to the **git SHA** of the deployed commit.
+- In CD the value is injected from the pipeline's commit SHA.
+- In the Vercel build the same value is set from `VERCEL_GIT_COMMIT_SHA`.
+- When `SENTRY_RELEASE` is unset the SDK falls back to its own detection; the
+  explicit value is preferred because it is stable across build and runtime.
+
+### Source map upload
+
+Minified stack traces are useless without source maps, so upload is part of the
+build, not an afterthought.
+
+- **CD:** the build step uploads source maps to Sentry using the release set
+  from the git SHA, then deletes the `.map` files from the deployed artifact so
+  they are not served publicly.
+- **Vercel build:** the same upload runs in the build command, keyed by
+  `VERCEL_GIT_COMMIT_SHA`, with the `.map` files excluded from the output.
+- Upload requires a Sentry auth token in the build environment only. It is
+  never present at runtime.
+
+### Tracing
+
+- `tracesSampleRate` defaults to **`0.1`** (10%). Tracing is sampled, not
+  exhaustive, so the performance overhead and event volume stay bounded.
+- The rate is overridable via `SENTRY_TRACES_SAMPLE_RATE` for a deliberate,
+  temporary increase during an investigation. It is not raised to `1.0` in
+  production.
+- Sentry tracing is independent of the W3C `traceparent` propagation described
+  below; the two coexist and do not share identifiers.
+
+### User context policy
+
+- Only the **username** is attached as user context. No email address, no
+  wallet public key, no IP address, and no other directly identifying field is
+  sent.
+- This keeps error reports useful for debugging ("which account hit this?")
+  without turning Sentry into a second store of customer PII.
+- The policy is enforced at the point of capture: the context object is
+  constructed from the username alone, so a caller cannot widen it by passing a
+  richer object.
 
 ---
 
@@ -323,3 +392,4 @@ customer data and no mutation path.
 - [BACKEND-CLIENT-CONTRACT-MAP.md](./BACKEND-CLIENT-CONTRACT-MAP.md) — endpoint wiring
 - [INVARIANTS.md](./INVARIANTS.md) — financial invariants replay cannot affect
 - [adr/0002-testnet-first-mainnet-feature-gated.md](./adr/0002-testnet-first-mainnet-feature-gated.md) — the gating policy
+- [SENTRY.md](./SENTRY.md) — Sentry setup and source map upload details

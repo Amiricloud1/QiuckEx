@@ -84,3 +84,13 @@ jobs:
           echo "Deploying version ${{ steps.meta.outputs.version }} successfully."
           # This acts as the structural baseline for your cloud's rolling zero-downtime upgrades
 
+      # Task: Upload Sentry source maps so production stack traces are de-minified
+      # and tagged with the release (git SHA).
+      - name: Upload Sentry Source Maps
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_RELEASE: ${{ github.sha }}
+        run: pnpm --filter @quickex/backend sentry:sourcemaps
+
