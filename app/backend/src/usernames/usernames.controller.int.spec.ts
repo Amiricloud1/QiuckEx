@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UsernamesController } from './usernames.controller';
 import { UsernamesService } from './usernames.service';
@@ -23,6 +28,7 @@ describe('UsernamesController', () => {
     const mockGetTrendingCreators = jest.fn().mockResolvedValue({ data: [], next_cursor: null, has_more: false });
     const mockGetRecentlyActiveUsers = jest.fn().mockResolvedValue({ data: [], next_cursor: null, has_more: false });
     const mockGetFeaturedCreators = jest.fn().mockResolvedValue({ data: [], next_cursor: null, has_more: false });
+    const mockUpdateProfile = jest.fn().mockResolvedValue({ ok: true });
     const mockEmit = jest.fn();
 
     const module: TestingModule = await Test.createTestingModule({
@@ -37,6 +43,7 @@ describe('UsernamesController', () => {
             getTrendingCreators: mockGetTrendingCreators,
             getRecentlyActiveUsers: mockGetRecentlyActiveUsers,
             getFeaturedCreators: mockGetFeaturedCreators,
+            updateProfile: mockUpdateProfile,
           },
         },
         {
@@ -235,6 +242,70 @@ describe('UsernamesController', () => {
       ]);
       expect(result.has_more).toBe(false);
       expect(result.next_cursor).toBeNull();
+    });
+  });
+
+  describe('updateProfile', () => {
+    const body = {
+      publicKey: validPublicKey,
+      displayName: 'Alice',
+      bio: 'Hello world',
+    };
+
+    it('returns ok: true on success', async () => {
+      const result = await controller.updateProfile(body);
+      expect(result).toEqual({ ok: true });
+      expect(usernamesService.updateProfile).toHaveBeenCalledWith(
+        validPublicKey,
+        expect.objectContaining({ displayName: 'Alice', bio: 'Hello world' }),
+      );
+    });
+
+    it('throws ConflictException with USERNAME_CONFLICT on conflict', async () => {
+      usernamesService.updateProfile.mockRejectedValueOnce(
+        new UsernameConflictError('taken'),
+      );
+      const err = await controller.updateProfile(body).catch((e) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(err.response).toMatchObject({ code: 'USERNAME_CONFLICT' });
+    });
+
+    it('throws ForbiddenException with USERNAME_NOT_OWNED when not owned', async () => {
+      usernamesService.updateProfile.mockRejectedValueOnce(
+        new ForbiddenException({
+          code: 'USERNAME_NOT_OWNED',
+          message: 'Profile not owned by wallet',
+        }),
+      );
+      const err = await controller.updateProfile(body).catch((e) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(err.response).toMatchObject({ code: 'USERNAME_NOT_OWNED' });
+    });
+
+    it('throws BadRequestException with USERNAME_PROFILE_INVALID on malformed payload', async () => {
+      usernamesService.updateProfile.mockRejectedValueOnce(
+        new BadRequestException({
+          code: 'USERNAME_PROFILE_INVALID',
+          message: 'Invalid profile payload',
+        }),
+      );
+      const err = await controller.updateProfile(body).catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.response).toMatchObject({ code: 'USERNAME_PROFILE_INVALID' });
+    });
+
+    it('throws ServiceUnavailableException with USERNAME_DEPENDENCY_UNAVAILABLE on dependency failure', async () => {
+      usernamesService.updateProfile.mockRejectedValueOnce(
+        new ServiceUnavailableException({
+          code: 'USERNAME_DEPENDENCY_UNAVAILABLE',
+          message: 'Dependency unavailable',
+        }),
+      );
+      const err = await controller.updateProfile(body).catch((e) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(err.response).toMatchObject({
+        code: 'USERNAME_DEPENDENCY_UNAVAILABLE',
+      });
     });
   });
 
