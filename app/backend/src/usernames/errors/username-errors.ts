@@ -13,8 +13,16 @@ export enum UsernameErrorCode {
   NOT_FOUND = 'USERNAME_NOT_FOUND',
   /** Claim signature is invalid, expired, or not backed by a Stellar account. */
   CLAIM_INVALID = 'USERNAME_CLAIM_INVALID',
-  /** Discovery dependency (e.g. Supabase) is unavailable. */
-  DISCOVERY_UNAVAILABLE = 'USERNAME_DISCOVERY_UNAVAILABLE',
+  /** Profile settings conflict (e.g. duplicate or stale write). */
+  PROFILE_CONFLICT = 'PROFILE_CONFLICT',
+  /** Profile settings are not owned by the requesting wallet. */
+  PROFILE_NOT_OWNED = 'PROFILE_NOT_OWNED',
+  /** Profile settings payload is malformed. */
+  PROFILE_MALFORMED = 'PROFILE_MALFORMED',
+  /** A dependency required to persist profile settings failed. */
+  PROFILE_DEPENDENCY_FAILURE = 'PROFILE_DEPENDENCY_FAILURE',
+  /** Idempotency key was reused with a different payload. */
+  PROFILE_IDEMPOTENCY_CONFLICT = 'PROFILE_IDEMPOTENCY_CONFLICT',
 }
 
 export class UsernameConflictError extends Error {
@@ -59,12 +67,53 @@ export class UsernameClaimInvalidError extends Error {
   }
 }
 
-export class UsernameDiscoveryUnavailableError extends Error {
+export class ProfileConflictError extends Error {
   constructor(
-    message = 'Username discovery service is temporarily unavailable',
-    public readonly cause?: unknown,
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_CONFLICT,
+    message = 'Profile settings conflict',
   ) {
     super(message);
-    this.name = 'UsernameDiscoveryUnavailableError';
+    this.name = 'ProfileConflictError';
+  }
+}
+
+export class ProfileNotOwnedError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_NOT_OWNED,
+    message = 'Profile settings are not owned by the requesting wallet',
+  ) {
+    super(message);
+    this.name = 'ProfileNotOwnedError';
+  }
+}
+
+export class ProfileMalformedError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_MALFORMED,
+    message = 'Profile settings payload is malformed',
+    public field?: string,
+  ) {
+    super(message);
+    this.name = 'ProfileMalformedError';
+  }
+}
+
+export class ProfileDependencyFailureError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_DEPENDENCY_FAILURE,
+    message = 'A dependency required to persist profile settings failed',
+  ) {
+    super(message);
+    this.name = 'ProfileDependencyFailureError';
+  }
+}
+
+export class ProfileIdempotencyConflictError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_IDEMPOTENCY_CONFLICT,
+    message = 'Idempotency key was reused with a different payload',
+  ) {
+    super(message);
+    this.name = 'ProfileIdempotencyConflictError';
   }
 }

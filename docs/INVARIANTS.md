@@ -125,6 +125,34 @@ until an explicit expiry. After the expiry the previous secret MUST be rejected.
 The previous secret MUST NOT be returned by any API response — only the instant
 at which it stops being accepted.
 
+INV-21: Correlation ID Propagation
+
+Every public API response MUST carry a correlation ID header. An inbound
+correlation ID MUST be validated against a strict allowlist of characters and
+length before it is accepted; an ID that fails validation MUST be rejected or
+replaced with a freshly generated one, never echoed back verbatim. The accepted
+correlation ID MUST be propagated into all logs, metrics, and outbound calls
+made while handling the request, so that a single request can be traced end to
+end.
+
+---
+
+## Profile Settings Invariants
+
+These invariants govern the off-chain profile settings path. A profile update
+never moves funds, but it may not silently clobber a concurrent edit or lose a
+version bump. See [CAPABILITY-MAP.md](./CAPABILITY-MAP.md) for the owning
+modules.
+
+INV-21: Profile Version Monotonicity
+
+A profile update MUST only succeed if the client-supplied version matches the
+currently stored version. On success the stored version MUST increment
+atomically with the write, so that two concurrent updates carrying the same
+version cannot both succeed: exactly one wins and the other MUST be rejected as
+a conflict. A version MUST NOT decrease, be reused, or be skipped as a side
+effect of an unrelated update.
+
 ---
 
 ## Architectural Enforcement References

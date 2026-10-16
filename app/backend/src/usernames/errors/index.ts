@@ -1,2 +1,2 @@
 export * from './username-errors';
-export * from './discovery-errors';
+export * from './profile-settings-errors';

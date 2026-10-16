@@ -6,10 +6,12 @@ import {
   Patch,
   Query,
   Param,
+  Headers,
   ConflictException,
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import {
@@ -213,10 +215,40 @@ export class UsernamesController {
   @ApiOperation({ summary: "Save validated profile settings with conflict detection" })
   @ApiBody({ type: ProfileSettingsDto })
   @ApiResponse({ status: 200, description: "Profile settings saved" })
+  @ApiResponse({ status: 400, description: "Profile payload failed validation" })
   @ApiResponse({ status: 403, description: "Profile is not owned by this wallet" })
   @ApiResponse({ status: 409, description: "Profile changed since it was loaded" })
-  async updateProfileSettings(@Body() body: ProfileSettingsDto) {
-    const result = await this.usernamesService.updateProfileSettings(body);
+  @ApiResponse({ status: 503, description: "A required dependency is unavailable" })
+  async updateProfileSettings(
+    @Body() body: ProfileSettingsDto,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    let result: Awaited<ReturnType<UsernamesService["updateProfileSettings"]>>;
+    try {
+      result = await this.usernamesService.updateProfileSettings(
+        body,
+        idempotencyKey,
+      );
+    } catch (err) {
+      if (err instanceof UsernameValidationError) {
+        throw new BadRequestException({
+          code: "PROFILE_MALFORMED",
+          message: err.message,
+          field: err.field,
+        });
+      }
+      if (err instanceof UsernameConflictError) {
+        throw new ConflictException({
+          code: "PROFILE_CONFLICT",
+          message: err.message,
+        });
+      }
+      throw new ServiceUnavailableException({
+        code: "PROFILE_DEPENDENCY_FAILURE",
+        message: "Profile settings could not be saved due to a dependency failure",
+      });
+    }
+
     if (result.status === "not_found") {
       throw new ForbiddenException({
         code: "PROFILE_NOT_OWNED",
@@ -227,6 +259,18 @@ export class UsernamesController {
       throw new ConflictException({
         code: "PROFILE_CONFLICT",
         message: "Profile changed since it was loaded",
+      });
+    }
+    if (result.status === "malformed") {
+      throw new BadRequestException({
+        code: "PROFILE_MALFORMED",
+        message: "Profile payload failed validation",
+      });
+    }
+    if (result.status === "dependency_failure") {
+      throw new ServiceUnavailableException({
+        code: "PROFILE_DEPENDENCY_FAILURE",
+        message: "Profile settings could not be saved due to a dependency failure",
       });
     }
     return { profile: result.profile };

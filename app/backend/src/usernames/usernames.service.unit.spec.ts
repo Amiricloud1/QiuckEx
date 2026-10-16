@@ -24,6 +24,7 @@ describe('UsernamesService', () => {
     getRecentlyActiveUsers: jest.fn(),
     getFeaturedUsernames: jest.fn(),
     getPublicProfile: jest.fn(),
+    updateProfileSettings: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -337,6 +338,148 @@ describe('UsernamesService', () => {
       const result = await service.getRecentlyActiveUsers(24, 2, cursor);
 
       expect(result.data.map((r) => r.id)).toEqual(['id-3', 'id-1']);
+    });
+  });
+
+  describe('updateProfileSettings', () => {
+    const PUBLIC_KEY = 'GBXGQ55JMQ4L2B6E7S8Y9Z0A1B2C3D4E5F6G7H8I7YWR';
+    const USERNAME = 'alice';
+
+    it('updates profile settings on the happy path', async () => {
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: 'hello',
+        avatar_url: 'https://example.com/a.png',
+        is_public: false,
+        version: 2,
+      });
+
+      const result = await service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+        display_name: 'Alice',
+        bio: 'hello',
+        avatar_url: 'https://example.com/a.png',
+        is_public: false,
+        version: 1,
+      });
+
+      expect(result).toEqual({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: 'hello',
+        avatar_url: 'https://example.com/a.png',
+        is_public: false,
+        version: 2,
+      });
+      expect(mockSupabaseService.updateProfileSettings).toHaveBeenCalledWith(
+        USERNAME,
+        PUBLIC_KEY,
+        expect.objectContaining({ version: 1 }),
+      );
+    });
+
+    it('throws a version conflict error when the stored version differs', async () => {
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce(null);
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 1,
+        }),
+      ).rejects.toThrow(UsernameConflictError);
+    });
+
+    it('throws not found / not owned when the username does not belong to the wallet', async () => {
+      mockSupabaseService.updateProfileSettings.mockRejectedValueOnce(
+        new UsernameValidationError('not owned'),
+      );
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 1,
+        }),
+      ).rejects.toThrow(UsernameValidationError);
+    });
+
+    it('is idempotent when replaying the same version and payload', async () => {
+      const row = {
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: null,
+        avatar_url: null,
+        is_public: true,
+        version: 2,
+      };
+      mockSupabaseService.updateProfileSettings.mockResolvedValue(row);
+
+      const first = await service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+        display_name: 'Alice',
+        version: 1,
+      });
+      const second = await service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+        display_name: 'Alice',
+        version: 1,
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('propagates dependency failures from SupabaseService', async () => {
+      mockSupabaseService.updateProfileSettings.mockRejectedValueOnce(
+        new Error('db down'),
+      );
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 1,
+        }),
+      ).rejects.toThrow('db down');
+    });
+
+    it('handles version boundary values', async () => {
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: null,
+        avatar_url: null,
+        is_public: true,
+        version: 1,
+      });
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: 0,
+        }),
+      ).resolves.toBeDefined();
+
+      mockSupabaseService.updateProfileSettings.mockResolvedValueOnce({
+        id: 'id-1',
+        username: USERNAME,
+        public_key: PUBLIC_KEY,
+        display_name: 'Alice',
+        bio: null,
+        avatar_url: null,
+        is_public: true,
+        version: Number.MAX_SAFE_INTEGER,
+      });
+
+      await expect(
+        service.updateProfileSettings(USERNAME, PUBLIC_KEY, {
+          display_name: 'Alice',
+          version: Number.MAX_SAFE_INTEGER - 1,
+        }),
+      ).resolves.toBeDefined();
     });
   });
 
