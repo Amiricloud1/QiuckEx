@@ -28,31 +28,11 @@ export const USERNAME_PATTERN_DESCRIPTION =
   'lowercase letters, numbers, and underscores only';
 
 /**
- * Visibility levels for a username.
- * - PUBLIC: discoverable and searchable by anyone.
- * - UNLISTED: accessible by direct link but excluded from search/discovery.
- * - PRIVATE: only visible to the owner and explicitly authorized parties.
+ * Feature flag key gating the username discovery endpoints.
+ *
+ * The four discovery endpoints (search, suggestions, trending, recent) are
+ * disabled by default and only enabled when this flag is turned on via the
+ * existing feature-flags module. This keeps non-mainnet behavior disabled
+ * until the underlying migrations are verified.
  */
-export const VISIBILITY_LEVELS = ['public', 'unlisted', 'private'] as const;
-
-/** Visibility level type derived from VISIBILITY_LEVELS. */
-export type VisibilityLevel = (typeof VISIBILITY_LEVELS)[number];
-
-/** Default visibility applied when none is specified. */
-export const DEFAULT_VISIBILITY: VisibilityLevel = 'public';
-
-/**
- * Grace period (in milliseconds) after a rotation during which the previous
- * username remains resolvable before it is fully released.
- */
-export const ROTATION_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Maximum number of announcements retained/emitted per rotation.
- */
-export const ROTATION_MAX_ANNOUNCEMENTS = 10;
-
-/**
- * Size of the nonce window used to prevent replay of rotation requests.
- */
-export const ROTATION_NONCE_WINDOW = 100;
+export const USERNAME_DISCOVERY_ENABLED = 'username_discovery_enabled';

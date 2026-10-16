@@ -1,2 +1,2 @@
 export * from './username-errors';
-export * from './visibility-errors';
+export * from './profile-settings-errors';

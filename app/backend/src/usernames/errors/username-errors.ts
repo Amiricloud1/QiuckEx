@@ -13,26 +13,16 @@ export enum UsernameErrorCode {
   NOT_FOUND = 'USERNAME_NOT_FOUND',
   /** Claim signature is invalid, expired, or not backed by a Stellar account. */
   CLAIM_INVALID = 'USERNAME_CLAIM_INVALID',
-  /** Key rotation has been announced but is not yet active. */
-  ROTATION_ANNOUNCED = 'USERNAME_ROTATION_ANNOUNCED',
-  /** Key rotation is within its grace period. */
-  ROTATION_GRACE_ACTIVE = 'USERNAME_ROTATION_GRACE_ACTIVE',
-  /** Key rotation has been revoked. */
-  ROTATION_REVOKED = 'USERNAME_ROTATION_REVOKED',
-  /** Key rotation replay detected. */
-  ROTATION_REPLAY = 'USERNAME_ROTATION_REPLAY',
-  /** Key rotation record not found. */
-  ROTATION_NOT_FOUND = 'USERNAME_ROTATION_NOT_FOUND',
-  /** Key rotation has expired. */
-  ROTATION_EXPIRED = 'USERNAME_ROTATION_EXPIRED',
-  /** Visibility level change is not permitted. */
-  VISIBILITY_FORBIDDEN = 'USERNAME_VISIBILITY_FORBIDDEN',
-}
-
-export enum VisibilityLevel {
-  PRIVATE = 'private',
-  UNLISTED = 'unlisted',
-  PUBLIC = 'public',
+  /** Profile settings conflict (e.g. duplicate or stale write). */
+  PROFILE_CONFLICT = 'PROFILE_CONFLICT',
+  /** Profile settings are not owned by the requesting wallet. */
+  PROFILE_NOT_OWNED = 'PROFILE_NOT_OWNED',
+  /** Profile settings payload is malformed. */
+  PROFILE_MALFORMED = 'PROFILE_MALFORMED',
+  /** A dependency required to persist profile settings failed. */
+  PROFILE_DEPENDENCY_FAILURE = 'PROFILE_DEPENDENCY_FAILURE',
+  /** Idempotency key was reused with a different payload. */
+  PROFILE_IDEMPOTENCY_CONFLICT = 'PROFILE_IDEMPOTENCY_CONFLICT',
 }
 
 export class UsernameConflictError extends Error {
@@ -77,24 +67,53 @@ export class UsernameClaimInvalidError extends Error {
   }
 }
 
-export class ProfileVisibilityError extends Error {
+export class ProfileConflictError extends Error {
   constructor(
-    public readonly code: UsernameErrorCode,
-    message: string,
-    public readonly visibility?: VisibilityLevel,
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_CONFLICT,
+    message = 'Profile settings conflict',
   ) {
     super(message);
-    this.name = 'ProfileVisibilityError';
+    this.name = 'ProfileConflictError';
   }
 }
 
-export class KeyRotationError extends Error {
+export class ProfileNotOwnedError extends Error {
   constructor(
-    public readonly code: UsernameErrorCode,
-    message: string,
-    public readonly username?: string,
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_NOT_OWNED,
+    message = 'Profile settings are not owned by the requesting wallet',
   ) {
     super(message);
-    this.name = 'KeyRotationError';
+    this.name = 'ProfileNotOwnedError';
+  }
+}
+
+export class ProfileMalformedError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_MALFORMED,
+    message = 'Profile settings payload is malformed',
+    public field?: string,
+  ) {
+    super(message);
+    this.name = 'ProfileMalformedError';
+  }
+}
+
+export class ProfileDependencyFailureError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_DEPENDENCY_FAILURE,
+    message = 'A dependency required to persist profile settings failed',
+  ) {
+    super(message);
+    this.name = 'ProfileDependencyFailureError';
+  }
+}
+
+export class ProfileIdempotencyConflictError extends Error {
+  constructor(
+    public readonly code: UsernameErrorCode = UsernameErrorCode.PROFILE_IDEMPOTENCY_CONFLICT,
+    message = 'Idempotency key was reused with a different payload',
+  ) {
+    super(message);
+    this.name = 'ProfileIdempotencyConflictError';
   }
 }

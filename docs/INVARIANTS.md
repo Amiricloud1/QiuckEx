@@ -125,34 +125,33 @@ until an explicit expiry. After the expiry the previous secret MUST be rejected.
 The previous secret MUST NOT be returned by any API response — only the instant
 at which it stops being accepted.
 
-INV-21: Visibility Authorization
+INV-21: Correlation ID Propagation
 
-A resource's visibility setting MUST be enforced at read time, not merely at
-write time. A caller who is not the owner, an authorized delegate, or a holder
-of a valid capability for the resource MUST NOT be able to observe the resource
-or any of its derived fields (amounts, counterparties, event history) through
-any read path, including list endpoints, search, webhooks, and exports. A
-visibility downgrade MUST take effect for all subsequent reads without requiring
-the resource to be re-written.
+Every public API response MUST carry a correlation ID header. An inbound
+correlation ID MUST be validated against a strict allowlist of characters and
+length before it is accepted; an ID that fails validation MUST be rejected or
+replaced with a freshly generated one, never echoed back verbatim. The accepted
+correlation ID MUST be propagated into all logs, metrics, and outbound calls
+made while handling the request, so that a single request can be traced end to
+end.
 
-INV-22: Idempotent Visibility Writes
+---
 
-Setting a resource's visibility to its current value MUST be a no-op: it MUST
-NOT emit an event, MUST NOT bump a version or updated-at timestamp, and MUST NOT
-invalidate caches or re-trigger downstream notifications. Repeating a visibility
-change with the same target value MUST converge to the same observable state
-regardless of how many times it is applied.
+## Profile Settings Invariants
 
-INV-23: Bounded Key-Rotation Grace Periods
+These invariants govern the off-chain profile settings path. A profile update
+never moves funds, but it may not silently clobber a concurrent edit or lose a
+version bump. See [CAPABILITY-MAP.md](./CAPABILITY-MAP.md) for the owning
+modules.
 
-A key rotation MUST define an explicit `graceEndsAt` instant. The previous key
-MUST remain valid for verification only until `graceEndsAt`, and MUST be rejected
-for every operation at or after that instant. The grace period MUST be bounded
-and finite; an unbounded or absent `graceEndsAt` is invalid. During the overlap,
-a signature produced by either the current or the previous key MUST be accepted
-at most once, and nonce uniqueness MUST hold across the rotation boundary: a
-nonce consumed under the previous key MUST NOT be replayable under the current
-key, or vice versa.
+INV-21: Profile Version Monotonicity
+
+A profile update MUST only succeed if the client-supplied version matches the
+currently stored version. On success the stored version MUST increment
+atomically with the write, so that two concurrent updates carrying the same
+version cannot both succeed: exactly one wins and the other MUST be rejected as
+a conflict. A version MUST NOT decrease, be reused, or be skipped as a side
+effect of an unrelated update.
 
 ---
 

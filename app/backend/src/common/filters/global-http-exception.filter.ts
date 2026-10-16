@@ -10,6 +10,7 @@ import { ThrottlerException } from "@nestjs/throttler";
 import { Request, Response } from "express";
 import { AppConfigService } from "../../config";
 import { MetricsService } from "../../metrics/metrics.service";
+import { getCorrelationId } from "../context/correlation-id.context";
 
 interface ErrorResponseBody {
   success: false;
@@ -61,10 +62,19 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
     const isProduction = this.config.isProduction;
 
-    // Extract correlation ID for traceability
-    const correlationId = (request as Record<string, unknown>)[
-      "correlationId"
-    ] as string | undefined;
+    // Extract correlation ID for traceability, falling back to the
+    // async-local context when the request-scoped value is missing.
+    const correlationId =
+      ((request as Record<string, unknown>)["correlationId"] as
+        | string
+        | undefined) ?? getCorrelationId();
+
+    // Always emit the correlation ID response header before writing the body.
+    if (correlationId) {
+      response.setHeader("X-Correlation-ID", correlationId);
+      response.setHeader("x-request-id", correlationId);
+      response.setHeader("x-correlation-id", correlationId);
+    }
 
     let status: number = HttpStatus.INTERNAL_SERVER_ERROR;
     let code = DEFAULT_CODE;
@@ -117,7 +127,8 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
               message: validation.message ?? "Validation failed",
               fields: validation.fields ?? [],
               traceId: correlationId ?? "unknown",
-              ...(correlationId ? { request_id: correlationId, correlationId } : {}),
+              request_id: correlationId ?? "unknown",
+              correlationId: correlationId ?? "unknown",
             },
           });
         }
@@ -148,7 +159,8 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
         code,
         message,
         traceId: correlationId ?? "unknown",
-        ...(correlationId ? { request_id: correlationId, correlationId } : {}),
+        request_id: correlationId ?? "unknown",
+        correlationId: correlationId ?? "unknown",
         ...(details && !isProduction ? { details } : {}),
       },
     };

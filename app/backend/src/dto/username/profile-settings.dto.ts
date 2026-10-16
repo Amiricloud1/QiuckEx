@@ -27,10 +27,15 @@ export class ProfileSettingsDto {
   @IsStellarPublicKey()
   publicKey!: string;
 
-  @ApiProperty({ minimum: 1, example: 1 })
+  @ApiProperty({
+    minimum: 1,
+    example: 1,
+    description:
+      "Client-supplied expected version used for optimistic concurrency control on conditional updates.",
+  })
   @IsInt()
   @Min(1)
-  profileVersion!: number;
+  version!: number;
 
   @ApiProperty({ example: "#6366f1" })
   @IsString()

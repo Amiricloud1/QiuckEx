@@ -40,6 +40,20 @@ request header. The resolved value is echoed back in:
 - `error.request_id` JSON field
 - All server-side log entries for that request
 
+### Correlation ID guarantees
+
+- **Every response carries `X-Correlation-ID`.** The header is present on all
+  responses — both success and error — not just on error envelopes.
+- **Inbound IDs are validated against a strict allowlist.** A client-supplied
+  `x-request-id` / `x-correlation-id` is only accepted if it matches the
+  allowed format (UUID v4, or the documented opaque token pattern). Anything
+  outside the allowlist is rejected as a correlation ID.
+- **Malformed IDs are replaced with a server-generated UUID.** If the inbound
+  value fails validation, the server discards it and generates a fresh UUID v4
+  instead of echoing the untrusted value back. The replacement is what appears
+  in `X-Correlation-ID`, `x-request-id`, `error.request_id`, and the logs.
+=======
+
 ---
 
 ## Error Codes
@@ -582,64 +596,16 @@ Policy of record: [../../docs/policies/ASSET-LISTING-POLICY.md](../../docs/polic
 
 Policy of record: [../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md](../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md).
 
-### Visibility controls (`visibility`)
+### API compatibility (`api-compatibility`)
 
 | Code | HTTP Status | Description |
 |---|---|---|
-| `VISIBILITY_UPDATE_DISABLED` | 403 | `privacy.visibility_controls` flag off |
-| `VISIBILITY_INVALID_SCOPE` | 400 | Unknown visibility scope requested (not in the published scope list) |
-| `VISIBILITY_SCOPE_NOT_FOUND` | 404 | No visibility record exists for the requested scope |
-| `VISIBILITY_UPDATE_FORBIDDEN` | 403 | Caller is not the owner of the resource being hidden or shown |
-| `VISIBILITY_IDEMPOTENCY_CONFLICT` | 409 | `Idempotency-Key` reused with a different payload |
-| `VISIBILITY_STORE_UNAVAILABLE` | 503 | Visibility store unreachable; the change was not persisted |
+| `API_COMPATIBILITY_BREAKING_CHANGE` | 422 | The proposed change removes or alters a field/endpoint in a way that breaks the published compatibility baseline |
+| `API_COMPATIBILITY_BASELINE_UNAVAILABLE` | 503 | The stored compatibility baseline could not be loaded, so the check cannot be evaluated |
+| `API_COMPATIBILITY_INVALID_SPEC` | 400 | The supplied OpenAPI specification could not be parsed or is missing required structure |
+| `API_COMPATIBILITY_CHECK_DISABLED` | 403 | `api.compatibility_check` flag off; the check refuses to run |
 
-Resolution guidance:
-
-- `VISIBILITY_UPDATE_DISABLED` — visibility controls are gated per environment; on
-  mainnet they are expected to be off. Do not retry; surface the flag state to the
-  user and fall back to the default (public) rendering.
-- `VISIBILITY_INVALID_SCOPE` — fetch the current scope list from
-  `GET /privacy/visibility/scopes` and only send values from that response.
-- `VISIBILITY_SCOPE_NOT_FOUND` — the scope has never been set for this subject, so
-  there is nothing to update. Treat as a no-op rather than an error.
-- `VISIBILITY_UPDATE_FORBIDDEN` — re-authenticate as the owning subject; scopes are
-  per-owner and cannot be changed by other keys, even with admin scope.
-- `VISIBILITY_IDEMPOTENCY_CONFLICT` — generate a fresh `Idempotency-Key` for the new
-  payload; never reuse a key across differing bodies.
-- `VISIBILITY_STORE_UNAVAILABLE` — retryable with exponential backoff; the previous
-  visibility value remains in effect until a write succeeds.
-
-### Key rotation (`rotation`)
-
-| Code | HTTP Status | Description |
-|---|---|---|
-| `ROTATION_DISABLED` | 403 | `privacy.key_rotation` flag off |
-| `ROTATION_KEY_NOT_FOUND` | 404 | The key id to rotate does not exist or was already retired |
-| `ROTATION_KEY_NOT_ACTIVE` | 409 | Key is not in an `active` state (already rotating or revoked) |
-| `ROTATION_OVERLAP_REQUIRED` | 422 | Request omitted the overlap window required for a safe cutover |
-| `ROTATION_OVERLAP_TOO_SHORT` | 422 | Overlap window is below the minimum accepted by policy |
-| `ROTATION_IN_PROGRESS` | 409 | A rotation for this key is already running; existing `rotationId` in `details` |
-| `ROTATION_IDEMPOTENCY_CONFLICT` | 409 | `Idempotency-Key` reused with a different payload |
-| `ROTATION_STORE_UNAVAILABLE` | 503 | Rotation store unreachable; no key material was changed |
-
-Resolution guidance:
-
-- `ROTATION_DISABLED` — rotation is gated per environment. Do not retry; report the
-  flag state and continue using the current key.
-- `ROTATION_KEY_NOT_FOUND` — verify the key id against `GET /api-keys`; retired keys
-  cannot be rotated and must be replaced instead.
-- `ROTATION_KEY_NOT_ACTIVE` — wait for the in-flight rotation to finish, or create a
-  new key if the current one was revoked.
-- `ROTATION_OVERLAP_REQUIRED` / `ROTATION_OVERLAP_TOO_SHORT` — resend with an overlap
-  window at or above the minimum returned in `details.minOverlapSeconds`. The overlap
-  is what lets old and new keys both verify during cutover; shortening it risks
-  rejecting in-flight requests.
-- `ROTATION_IN_PROGRESS` — poll the rotation status using `details.rotationId` rather
-  than starting a second rotation.
-- `ROTATION_IDEMPOTENCY_CONFLICT` — generate a fresh `Idempotency-Key` for the new
-  payload.
-- `ROTATION_STORE_UNAVAILABLE` — retryable with exponential backoff; the existing key
-  remains valid and no cutover has occurred.
+Policy of record: [../../docs/policies/API-COMPATIBILITY-POLICY.md](../../docs/policies/API-COMPATIBILITY-POLICY.md).
 
 ## HTTP Status Code Summary
 
@@ -650,12 +616,12 @@ Resolution guidance:
 | 204 | No Content | Successful DELETE operations |
 | 400 | Bad Request | `VALIDATION_ERROR`, `USERNAME_INVALID`, `STELLAR_INVALID_*` |
 | 401 | Unauthorized | `UNAUTHORIZED` |
-| 403 | Forbidden | `FORBIDDEN`, `USERNAME_LIMIT_EXCEEDED`, `VISIBILITY_UPDATE_DISABLED`, `ROTATION_DISABLED` |
-| 404 | Not Found | `NOT_FOUND`, `USERNAME_NOT_FOUND`, `LINK_NOT_FOUND`, `VISIBILITY_SCOPE_NOT_FOUND`, `ROTATION_KEY_NOT_FOUND` |
-| 409 | Conflict | `USERNAME_TAKEN`, `LINK_ALREADY_PAID`, `LISTING_ALREADY_ACTIVE`, `VISIBILITY_IDEMPOTENCY_CONFLICT`, `ROTATION_IN_PROGRESS` |
+| 403 | Forbidden | `FORBIDDEN`, `USERNAME_LIMIT_EXCEEDED`, `PROFILE_NOT_OWNED` |
+| 404 | Not Found | `NOT_FOUND`, `USERNAME_NOT_FOUND`, `LINK_NOT_FOUND` |
+| 409 | Conflict | `USERNAME_TAKEN`, `LINK_ALREADY_PAID`, `LISTING_ALREADY_ACTIVE`, `PROFILE_CONFLICT`, `PROFILE_IDEMPOTENCY_CONFLICT` |
 | 410 | Gone | `LINK_EXPIRED`, `LINK_CANCELLED` |
 | 422 | Unprocessable | `STELLAR_TRANSACTION_FAILED`, `BID_BELOW_MINIMUM`, `LINK_LIMIT_EXCEEDED`, `ROTATION_OVERLAP_REQUIRED` |
 | 429 | Rate Limited | `RATE_LIMIT_EXCEEDED` |
 | 500 | Server Error | `INTERNAL_SERVER_ERROR` |
 | 502 | Bad Gateway | `STELLAR_NETWORK_ERROR`, `WEBHOOK_DELIVERY_FAILED` |
-| 503 | Unavailable | `CONTRACT_NOT_CONFIGURED`, `VISIBILITY_STORE_UNAVAILABLE`, `ROTATION_STORE_UNAVAILABLE`, Horizon backoff |
+| 503 | Unavailable | `CONTRACT_NOT_CONFIGURED`, `API_COMPATIBILITY_BASELINE_UNAVAILABLE`, Horizon backoff |

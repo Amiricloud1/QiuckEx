@@ -27,5 +27,11 @@ import { KeyRotationService } from "./key-rotation.service";
     UsernameReconciliationService,
     KeyRotationService,
   ],
+  exports: [
+    UsernamesService,
+    DiscoveryCacheService,
+    UsernameRankingService,
+    UsernameReconciliationService,
+  ],
 })
 export class UsernamesModule {}

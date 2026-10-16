@@ -345,4 +345,69 @@ describe("App endpoints", () => {
       },
     });
   });
+
+  // -----------------------------
+  // CORRELATION ID TESTS
+  // -----------------------------
+
+  const CORRELATION_ID_HEADER = "x-correlation-id";
+
+  it("includes a correlation ID header on success responses", async () => {
+    const response = await request(app.getHttpServer())
+      .get("/health")
+      .expect(200);
+
+    expect(response.header[CORRELATION_ID_HEADER]).toBeDefined();
+    expect(typeof response.header[CORRELATION_ID_HEADER]).toBe("string");
+    expect(response.header[CORRELATION_ID_HEADER].length).toBeGreaterThan(0);
+  });
+
+  it("includes a correlation ID header on error responses", async () => {
+    const response = await request(app.getHttpServer())
+      .post("/username")
+      .send({ username: "A" })
+      .expect(400);
+
+    expect(response.header[CORRELATION_ID_HEADER]).toBeDefined();
+    expect(typeof response.header[CORRELATION_ID_HEADER]).toBe("string");
+    expect(response.header[CORRELATION_ID_HEADER].length).toBeGreaterThan(0);
+  });
+
+  it("honors a valid client-supplied correlation ID", async () => {
+    const clientId = "client-supplied-id-123";
+
+    const response = await request(app.getHttpServer())
+      .get("/health")
+      .set(CORRELATION_ID_HEADER, clientId)
+      .expect(200);
+
+    expect(response.header[CORRELATION_ID_HEADER]).toBe(clientId);
+  });
+
+  it("rejects and replaces a malformed client-supplied correlation ID", async () => {
+    const malformedId = "invalid id with spaces!";
+
+    const response = await request(app.getHttpServer())
+      .get("/health")
+      .set(CORRELATION_ID_HEADER, malformedId)
+      .expect(200);
+
+    expect(response.header[CORRELATION_ID_HEADER]).toBeDefined();
+    expect(response.header[CORRELATION_ID_HEADER]).not.toBe(malformedId);
+  });
+
+  it("rejects and replaces an oversized client-supplied correlation ID", async () => {
+    const oversizedId = "a".repeat(1024);
+
+    const response = await request(app.getHttpServer())
+      .get("/health")
+      .set(CORRELATION_ID_HEADER, oversizedId)
+      .expect(200);
+
+    expect(response.header[CORRELATION_ID_HEADER]).toBeDefined();
+    expect(response.header[CORRELATION_ID_HEADER]).not.toBe(oversizedId);
+    expect(response.header[CORRELATION_ID_HEADER].length).toBeLessThan(
+      oversizedId.length,
+    );
+  });
 });
