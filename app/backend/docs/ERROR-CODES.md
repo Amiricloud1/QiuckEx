@@ -596,6 +596,17 @@ Policy of record: [../../docs/policies/ASSET-LISTING-POLICY.md](../../docs/polic
 
 Policy of record: [../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md](../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md).
 
+### API compatibility (`api-compatibility`)
+
+| Code | HTTP Status | Description |
+|---|---|---|
+| `API_COMPATIBILITY_BREAKING_CHANGE` | 422 | The proposed change removes or alters a field/endpoint in a way that breaks the published compatibility baseline |
+| `API_COMPATIBILITY_BASELINE_UNAVAILABLE` | 503 | The stored compatibility baseline could not be loaded, so the check cannot be evaluated |
+| `API_COMPATIBILITY_INVALID_SPEC` | 400 | The supplied OpenAPI specification could not be parsed or is missing required structure |
+| `API_COMPATIBILITY_CHECK_DISABLED` | 403 | `api.compatibility_check` flag off; the check refuses to run |
+
+Policy of record: [../../docs/policies/API-COMPATIBILITY-POLICY.md](../../docs/policies/API-COMPATIBILITY-POLICY.md).
+
 ## HTTP Status Code Summary
 
 | Status | Meaning | Common Codes |
@@ -613,4 +624,4 @@ Policy of record: [../../docs/policies/DATA-RETENTION-PRIVACY-POLICY.md](../../d
 | 429 | Rate Limited | `RATE_LIMIT_EXCEEDED` |
 | 500 | Server Error | `INTERNAL_SERVER_ERROR` |
 | 502 | Bad Gateway | `STELLAR_NETWORK_ERROR`, `WEBHOOK_DELIVERY_FAILED` |
-| 503 | Unavailable | `CONTRACT_NOT_CONFIGURED`, Horizon backoff |
+| 503 | Unavailable | `CONTRACT_NOT_CONFIGURED`, `API_COMPATIBILITY_BASELINE_UNAVAILABLE`, Horizon backoff |
