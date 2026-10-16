@@ -100,6 +100,12 @@ The gate re-runs on every pull request, so an upgrade that introduces a
 next release audit. Regenerating the lockfile alone cannot clear the failure —
 only an exception or removal can.
 
+In addition to `scripts/deps/check.mjs`, the dependency-review workflow
+(`.github/workflows/dependency-review.yml`) enforces the deny list at PR time,
+failing the pull request when a change introduces a denied licence such as
+`GPL-2.0` or `AGPL-3.0`. The workflow file also documents the exception
+process for cases where a denied licence must be accepted.
+
 **Resolving a failure**
 
 | Message | Action |
