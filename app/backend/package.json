@@ -78,6 +78,8 @@
     "test:smoke": "jest --config jest.e2e.config.ts test/smoke.e2e-spec.ts --testTimeout=30000",
     "test:smoke:soroban": "jest --config jest.e2e.config.ts test/smoke-soroban-horizon.e2e-spec.ts --testTimeout=30000",
     "test:smoke:all": "jest --config jest.e2e.config.ts test/smoke*.e2e-spec.ts --testTimeout=30000",
+    "test:smoke:remote": "node scripts/smoke-test.mjs",
+    "test:smoke:remote:ci": "node scripts/smoke-test.mjs",
     "test:mutation": "node scripts/run-mutation-tests.js",
     "db:verify-migrations": "node scripts/verify-migrations.js",
     "test:perf:horizon": "node scripts/horizon-perf-regression.js",
