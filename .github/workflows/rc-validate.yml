@@ -111,6 +111,18 @@ jobs:
           fi
           ./scripts/rc-validate.sh "${ARGS[@]}"
 
+      # The compatibility gate is a hard promotion blocker: a candidate with
+      # breaking API changes must never be promoted. It runs after the main
+      # gate so a failing compatibility check is reported separately from the
+      # rest of the validation, and it is never skipped — not on pull_request
+      # (where the main gate runs --quick) and not via allow_skip.
+      - name: Check API compatibility
+        env:
+          RC_BASE_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          ./scripts/check-api-compatibility.sh
+
       - name: Upload gate report
         if: always()
         uses: actions/upload-artifact@v4

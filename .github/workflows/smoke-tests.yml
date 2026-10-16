@@ -1,6 +1,8 @@
 name: Deployment Smoke Tests
 
 on:
+  deployment:
+    status: success
   workflow_dispatch:
     inputs:
       environment:
@@ -12,21 +14,6 @@ on:
           - production
           - staging
           - development
-      base_url:
-        description: 'Base URL to run smoke tests against (overrides environment default)'
-        required: false
-        type: string
-  workflow_call:
-    inputs:
-      base_url:
-        description: 'Base URL to run smoke tests against'
-        required: true
-        type: string
-      environment:
-        description: 'Environment name (e.g. staging-preview)'
-        required: false
-        default: 'staging'
-        type: string
 
 jobs:
   smoke-tests:
@@ -53,24 +40,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build application
-        run: pnpm run build
-
       - name: Determine environment URL
         id: env-url
         run: |
-          if [ -n "${{ inputs.base_url }}" ]; then
-            echo "url=${{ inputs.base_url }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" == "deployment" ]; then
+            echo "url=${{ github.event.deployment.environment_url }}" >> $GITHUB_OUTPUT
+            echo "env=${{ github.event.deployment.environment }}" >> $GITHUB_OUTPUT
           else
             if [ "${{ inputs.environment }}" == "production" ]; then
               echo "url=https://api.quickex.io" >> $GITHUB_OUTPUT
+              echo "env=production" >> $GITHUB_OUTPUT
             elif [ "${{ inputs.environment }}" == "staging" ]; then
               echo "url=https://api-staging.quickex.io" >> $GITHUB_OUTPUT
+              echo "env=staging" >> $GITHUB_OUTPUT
             else
               echo "url=http://localhost:3000" >> $GITHUB_OUTPUT
+              echo "env=development" >> $GITHUB_OUTPUT
             fi
           fi
-          echo "env=${{ inputs.environment }}" >> $GITHUB_OUTPUT
 
       - name: Wait for deployment to be ready
         run: |
@@ -93,24 +80,20 @@ jobs:
         id: smoke-tests
         env:
           SMOKE_TEST_BASE_URL: ${{ steps.env-url.outputs.url }}
+          SMOKE_TEST_USERNAME: ${{ secrets.SMOKE_TEST_USERNAME }}
+          SMOKE_TEST_WEBHOOK_URL: ${{ secrets.SMOKE_TEST_WEBHOOK_URL }}
           NODE_ENV: test
           STELLAR_NETWORK: ${{ steps.env-url.outputs.env == 'production' && 'mainnet' || 'testnet' }}
         run: |
           echo "Running smoke tests against ${{ steps.env-url.outputs.url }}"
           echo "Environment: ${{ steps.env-url.outputs.env }}"
 
-          # Run smoke tests with Jest
-          pnpm run test:e2e -- test/smoke.e2e-spec.ts --testTimeout=30000 --verbose
-
-          # Run Soroban/Horizon specific smoke tests
-          pnpm run test:e2e -- test/smoke-soroban-horizon.e2e-spec.ts --testTimeout=30000 --verbose
-        continue-on-error: true
+          pnpm run test:smoke:remote
 
       - name: Generate smoke test report
         if: always()
         id: test-report
         run: |
-          # Create a summary report
           echo "# Smoke Test Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** ${{ steps.env-url.outputs.env }}" >> $GITHUB_STEP_SUMMARY
@@ -122,7 +105,6 @@ jobs:
             echo "## ✅ All smoke tests passed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "The deployment is healthy and all critical endpoints are functioning correctly." >> $GITHUB_STEP_SUMMARY
-            exit 0
           else
             echo "## ❌ Smoke tests failed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -135,12 +117,20 @@ jobs:
             echo "- Username search: \`/username/search\`" >> $GITHUB_STEP_SUMMARY
             echo "- Soroban RPC connectivity" >> $GITHUB_STEP_SUMMARY
             echo "- Horizon connectivity" >> $GITHUB_STEP_SUMMARY
-            exit 1
           fi
 
       - name: Notify on failure
         if: failure()
+        env:
+          SMOKE_TEST_WEBHOOK_URL: ${{ secrets.SMOKE_TEST_WEBHOOK_URL }}
         run: |
           echo "Smoke tests failed! Deployment may have issues."
-          echo "Please review the logs and check the deployment status."
+          if [ -n "$SMOKE_TEST_WEBHOOK_URL" ]; then
+            curl -sf -X POST "$SMOKE_TEST_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{\"text\":\"❌ Smoke tests failed for ${{ steps.env-url.outputs.env }} (${{ steps.env-url.outputs.url }}). See https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+              || echo "Failed to post failure notification to webhook."
+          else
+            echo "SMOKE_TEST_WEBHOOK_URL not set; skipping webhook notification."
+          fi
           exit 1

@@ -401,7 +401,16 @@ export class SupabaseService {
       return this.searchUsernamesFallback(normalizedQuery, limit);
     }
 
-    return data ?? [];
+    // Normalize the RPC result: PostgREST may return `similarity_score` as a
+    // string (e.g. numeric columns), so coerce it to a number and guarantee a
+    // stable value for every row.
+    return (data ?? []).map((row: SearchProfileResult) => ({
+      ...row,
+      similarity_score:
+        row.similarity_score == null
+          ? this.calculateSimpleSimilarity(row.username, normalizedQuery)
+          : Number(row.similarity_score),
+    }));
   }
 
   /**
@@ -703,7 +712,18 @@ export class SupabaseService {
 
     if (error) this.handleError(error);
 
-    return (data ?? []) as FeaturedProfileResult[];
+    // Guard: only return rows explicitly marked as featured and normalize
+    // `featured_rank` to `number | null` (PostgREST may return it as a string).
+    return (data ?? [])
+      .filter(
+        (row: FeaturedProfileResult & { is_featured?: boolean }) =>
+          row.is_featured === true,
+      )
+      .map((row: FeaturedProfileResult) => ({
+        ...row,
+        featured_rank:
+          row.featured_rank == null ? null : Number(row.featured_rank),
+      }));
   }
 
   /**
