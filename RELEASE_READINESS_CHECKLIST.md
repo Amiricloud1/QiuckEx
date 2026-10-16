@@ -149,11 +149,22 @@ Ephemeral contributor previews must not leak into a release:
 - [ ] Post-deploy on-chain validation done: `health_check` OK and `get_deployment_metadata` matches the manifest/registry
 - [ ] Governance requirements met: signer set documented, pause policy configured, admin/deploy key explicit in the PR
 
-## 9. Reviewer sign-off
+## 9. Compatibility gate
+
+A release cannot be promoted unless the compatibility report passes:
+
+- [ ] Compatibility report generated for the release candidate and attached to the release PR
+- [ ] Compatibility report status is **passing** (no unresolved breaking incompatibilities)
+- [ ] Any reported incompatibilities are either resolved or explicitly accepted in the release PR (who accepted, why, and follow-up issue if applicable)
+
+If the compatibility report is missing or failing, stop: the release is **not promotable** until it passes.
+
+## 10. Reviewer sign-off
 
 A release PR is mergeable only when:
 
 - [ ] The RC validation report (ID + timestamp) is linked in the PR and shows `releaseReady: true`
+- [ ] The compatibility report (passing) is linked in the PR
 - [ ] Testnet validation output (deploy manifest, smoke results, event smoke test) is attached or summarized in the PR
 - [ ] At least one reviewer per affected surface has approved:
   - **Contracts** — a contract maintainer confirms deploy artifacts, registry entries, and upgrade-ceremony/rollback plan
@@ -162,7 +173,7 @@ A release PR is mergeable only when:
 - [ ] Any accepted warnings or guard overrides are explicitly written down in the PR (who accepted, why, and follow-up issue if applicable)
 - [ ] For mainnet promotion: governance approval is captured and the recorded testnet run is referenced, per the [mainnet release gate](app/contract/documentation/deployment-playbook.md)
 
-## 10. Rollback references
+## 11. Rollback references
 
 Know the rollback path **before** shipping. In order of preference (mitigate before rolling back):
 

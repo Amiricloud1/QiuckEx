@@ -125,6 +125,16 @@ until an explicit expiry. After the expiry the previous secret MUST be rejected.
 The previous secret MUST NOT be returned by any API response — only the instant
 at which it stops being accepted.
 
+INV-21: Correlation ID Propagation
+
+Every public API response MUST carry a correlation ID header. An inbound
+correlation ID MUST be validated against a strict allowlist of characters and
+length before it is accepted; an ID that fails validation MUST be rejected or
+replaced with a freshly generated one, never echoed back verbatim. The accepted
+correlation ID MUST be propagated into all logs, metrics, and outbound calls
+made while handling the request, so that a single request can be traced end to
+end.
+
 ---
 
 ## Profile Settings Invariants

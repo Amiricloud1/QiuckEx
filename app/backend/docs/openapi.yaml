@@ -10,6 +10,11 @@ info:
     **Base URL (development):** `http://localhost:3000`
 
     Interactive Swagger UI is available at `/docs` when the server is running.
+
+    **Correlation IDs:** Clients may supply an `X-Correlation-ID` request header
+    (a validated identifier). The server echoes it back on the response and uses
+    it for request tracing; if omitted, the server generates one. Every error
+    response includes the `X-Correlation-ID` header.
   version: 1.0.0
   contact:
     name: QuickEx API Support
@@ -2544,18 +2549,27 @@ components:
   responses:
     BadRequest:
       description: Validation failed
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/XCorrelationId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     NotFound:
       description: Resource not found
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/XCorrelationId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     RateLimit:
       description: Rate limit exceeded
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/XCorrelationId"
       content:
         application/json:
           schema:
@@ -2601,6 +2615,20 @@ components:
               details:
                 currentVersion: 7
                 providedVersion: 5
+
+  # -------------------------------------------------------------------------
+  # Reusable Headers
+  # -------------------------------------------------------------------------
+  headers:
+    XCorrelationId:
+      description: >
+        Correlation ID for request tracing. Echoes the client-supplied
+        `X-Correlation-ID` request header when present and valid; otherwise a
+        server-generated identifier is returned.
+      schema:
+        type: string
+        example: 3f1a9c2e-7b4d-4e8a-9c1f-2d6b5a0e8f3c
+=======
 
   # -------------------------------------------------------------------------
   # Schemas
