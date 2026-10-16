@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
+import { getCorrelationId } from '../context/correlation.context';
 
 /**
  * LoggingInterceptor logs every HTTP request with full request context
@@ -45,7 +46,9 @@ export class LoggingInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest();
     const { method, url, body, route } = request;
     const correlationId =
-      (request as Record<string, unknown>)['correlationId'] || 'N/A';
+      getCorrelationId() ||
+      (request as Record<string, unknown>)['correlationId'] ||
+      'N/A';
     const userId = this.extractUserId(request);
     const routePath = route?.path || url;
     const now = Date.now();

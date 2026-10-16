@@ -22,6 +22,13 @@ Auth conventions:
 - **Admin-scoped API key** (`@RequireScopes('admin')`): all `admin/*` controllers, contract registry writes (`publish`, `PUT deployments/:name`, `rollback`)
 - Errors follow the global envelope `{ code, message, fields? }` (global `ValidationPipe` in `main.ts`, e.g. `VALIDATION_ERROR`)
 
+Correlation IDs:
+
+- Clients **should send** an `X-Correlation-ID` header on every request (any stable, unique string per logical operation, e.g. a UUID). When omitted, the backend generates one.
+- The backend **echoes** the effective value back on the `X-Correlation-ID` response header — clients should read it and attach it to client-side logs, error reports, and support requests.
+- The same value is included in the error envelope's `correlationId` field (when present) and in structured backend logs, so a single ID ties a client-visible failure to its server-side trace.
+- Include the `X-Correlation-ID` value in any support request or bug report about a failed call; without it, server-side diagnosis requires guessing from timestamps.
+
 ## Transaction submission, confirmation & retry orchestration
 
 The transaction lifecycle is owned by the `transactions` module (`app/backend/src/transactions/*`) and consumed by the mobile history screen (`app/mobile/services/transactions.ts`). Submission, confirmation polling, and retry are orchestrated server-side so clients never hold signing keys — self-custody is preserved because the backend only ever receives an already-signed XDR envelope and never a secret key.
