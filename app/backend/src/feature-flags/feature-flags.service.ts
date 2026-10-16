@@ -86,6 +86,23 @@ const DEFAULT_FLAGS: FeatureFlagRecord[] = [
     updatedAt: new Date(0).toISOString(),
     updatedBy: 'bootstrap',
   },
+  // ── API compatibility gate ───────────────────────────────────────────────
+  // Safe default: disabled on mainnet (production), enabled on development/test.
+  {
+    key: 'api.compatibility_gate',
+    name: 'API Compatibility Gate',
+    description:
+      'Enforces API version compatibility checks on incoming requests. ' +
+      'Disabled by default on mainnet and enabled on development/test.',
+    enabled: true,
+    killSwitch: false,
+    rolloutPercentage: 100,
+    allowedUsers: [],
+    environments: ['development', 'test'],
+    metadata: { highRisk: false, flow: 'api_compatibility', network: 'testnet' },
+    updatedAt: new Date(0).toISOString(),
+    updatedBy: 'bootstrap',
+  },
   // ── Governance flags (issues #306, #307) ─────────────────────────────────
   // Enabled on local/test only: mainnet enforcement requires the policy review
   // sign-off recorded in docs/policies/*.json (defaultDisabledNetworks).
@@ -202,6 +219,24 @@ const DEFAULT_FLAGS: FeatureFlagRecord[] = [
       lastActiveAt: 1,
       isFeatured: 2,
     },
+    updatedAt: new Date(0).toISOString(),
+    updatedBy: 'bootstrap',
+  },
+  // ── Username key rotation ────────────────────────────────────────────────
+  // Enabled on local/test only. Mainnet enablement requires operational sign-off
+  // and review of key-rotation endpoint exposure at production scale.
+  {
+    key: 'username.key_rotation',
+    name: 'Username Key Rotation',
+    description:
+      'Enables username key rotation endpoints. Disabled on mainnet by default ' +
+      'and must be enabled deliberately after operational sign-off.',
+    enabled: true,
+    killSwitch: false,
+    rolloutPercentage: 100,
+    allowedUsers: [],
+    environments: ['development', 'test'],
+    metadata: { highRisk: true, flow: 'username_key_rotation', network: 'testnet' },
     updatedAt: new Date(0).toISOString(),
     updatedBy: 'bootstrap',
   },

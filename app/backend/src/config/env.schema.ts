@@ -396,9 +396,9 @@ export const envSchema = Joi.object({
     .min(0)
     .max(1)
     .optional()
-    .default(1.0)
+    .default(0.1)
     .description(
-      "Sentry performance traces sample rate (0.0 to 1.0). Default: 1.0",
+      "Sentry performance traces sample rate (0.0 to 1.0). Default: 0.1",
     ),
 
   SENTRY_PROFILES_SAMPLE_RATE: Joi.number()
@@ -501,6 +501,26 @@ export const envSchema = Joi.object({
     .min(0)
     .default(14 * 24 * 60 * 60 * 1000)
     .description("Maximum age before branch preview auto-expiry"),
+
+  // ── Compatibility Gate ──────────────────────────────────────────────────
+  COMPATIBILITY_BASELINE_PATH: Joi.string()
+    .empty("")
+    .optional()
+    .description(
+      "Filesystem path to the compatibility baseline artifact used by the compatibility gate",
+    ),
+  COMPATIBILITY_OVERRIDE_ALLOWLIST: Joi.string()
+    .empty("")
+    .optional()
+    .description(
+      "Comma-separated list of identities permitted to override compatibility gate failures",
+    ),
+  COMPATIBILITY_GATE_MODE: Joi.string()
+    .valid("enforce", "warn", "off")
+    .default("enforce")
+    .description(
+      "Compatibility gate enforcement mode: 'enforce' blocks incompatible changes, 'warn' logs only, 'off' disables the gate",
+    ),
 });
 
 /**
@@ -584,4 +604,7 @@ export interface EnvConfig {
   ABUSE_SIGNAL_HASH_SALT: string;
   PREVIEW_INACTIVITY_THRESHOLD_MS: number;
   PREVIEW_MAX_AGE_MS: number;
+  COMPATIBILITY_BASELINE_PATH?: string;
+  COMPATIBILITY_OVERRIDE_ALLOWLIST?: string;
+  COMPATIBILITY_GATE_MODE: "enforce" | "warn" | "off";
 }

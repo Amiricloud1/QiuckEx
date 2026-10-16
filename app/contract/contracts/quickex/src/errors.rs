@@ -84,6 +84,19 @@ pub enum QuickexError {
     StealthAddressAlreadyUsed = 401,
     /// No stealth escrow found for the given stealth address.
     StealthEscrowNotFound = 402,
+    // Key rotation lifecycle errors (400-499)
+    /// A key rotation has been announced and is pending activation.
+    KeyRotationAnnounced = 403,
+    /// The grace period for the previous key is still active.
+    KeyRotationGraceActive = 404,
+    /// The announced key rotation has been revoked.
+    KeyRotationRevoked = 405,
+    /// The rotation proof or nonce has already been consumed; replay detected.
+    KeyRotationReplay = 406,
+    /// No key rotation found for the given identifier.
+    KeyRotationNotFound = 407,
+    /// The key rotation window has expired.
+    KeyRotationExpired = 408,
     // Oracle errors (600-699)
     /// Oracle price data exceeds the configured staleness threshold and was rejected.
     OracleStalePrice = 600,
@@ -140,6 +153,12 @@ mod compatibility_tests {
             (QuickexError::StealthAddressMismatch, 400),
             (QuickexError::StealthAddressAlreadyUsed, 401),
             (QuickexError::StealthEscrowNotFound, 402),
+            (QuickexError::KeyRotationAnnounced, 403),
+            (QuickexError::KeyRotationGraceActive, 404),
+            (QuickexError::KeyRotationRevoked, 405),
+            (QuickexError::KeyRotationReplay, 406),
+            (QuickexError::KeyRotationNotFound, 407),
+            (QuickexError::KeyRotationExpired, 408),
             (QuickexError::NonceAlreadyUsed, 500),
             (QuickexError::SignatureExpired, 501),
             (QuickexError::OracleStalePrice, 600),

@@ -37,3 +37,13 @@ CREATE INDEX IF NOT EXISTS idx_notification_prefs_pk_channel_created_at_id
 -- notification_log: filtered by public_key + channel='webhook'
 CREATE INDEX IF NOT EXISTS idx_notification_log_pk_channel_created_at_id
   ON notification_log (public_key, channel, created_at DESC, id DESC);
+
+-- Featured discovery ordering: (is_featured, featured_rank, id) filtered by is_public.
+-- Already added in 20260724000000; re-declared here with IF NOT EXISTS to confirm.
+CREATE INDEX IF NOT EXISTS idx_public_featured_rank_id
+  ON public_profiles (is_featured, featured_rank, id)
+  WHERE is_public = true;
+
+-- Recently-active ordering: (is_public, last_active_at DESC, id ASC)
+CREATE INDEX IF NOT EXISTS idx_public_last_active_at_id
+  ON public_profiles (is_public, last_active_at DESC, id ASC);

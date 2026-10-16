@@ -43,10 +43,11 @@ Both environments use identical code and build processes, differing only in conf
 4. Confirm no regressions or issues
 
 ### Step 2: Merge to Main
-1. Create a pull request from `staging` to `main`
-2. Review changes and obtain approvals
-3. Merge the pull request
-4. The CD pipeline will automatically deploy to production
+1. Confirm the compatibility gate has passed (see [RELEASE_READINESS_CHECKLIST.md](RELEASE_READINESS_CHECKLIST.md))
+2. Create a pull request from `staging` to `main`
+3. Review changes and obtain approvals
+4. Merge the pull request
+5. The CD pipeline will automatically deploy to production
 
 ### Step 3: Verify Production Deployment
 1. Check Vercel deployment status
