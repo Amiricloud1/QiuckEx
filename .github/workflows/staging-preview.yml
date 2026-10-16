@@ -20,7 +20,7 @@ name: Staging Preview
 # Soroban contract has no mainnet deployment (ADR 0002).
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -45,9 +45,16 @@ jobs:
     name: Provision isolated preview
     # Forks cannot read repository secrets, so a fork PR gets the build-only
     # path. The preview is then unavailable rather than half-provisioned.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      github.event.action != 'closed' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # All secret-consuming jobs are bound to the `preview` environment so the
+    # preview secrets are scoped to preview work and never leak into other
+    # workflows.
+    environment: preview
 
     steps:
       - name: Checkout code
@@ -117,6 +124,10 @@ jobs:
           # Feature gate, stated as code rather than assumed: previews are
           # testnet-only. Mirrors buildPreviewManifest's refusal.
           export STELLAR_NETWORK=testnet
+          if [ "$STELLAR_NETWORK" = "mainnet" ] || [ "$STELLAR_NETWORK" = "public" ]; then
+            echo "::error::mainnet previews are refused (ADR 0002)"
+            exit 1
+          fi
 
           echo "::group::Preview manifest"
           echo "scope_id:   $SCOPE_ID"
@@ -125,6 +136,110 @@ jobs:
           echo "network:    $STELLAR_NETWORK"
           echo "ttl:        7 days (clamped to a 14 day maximum)"
           echo "::endgroup::"
+
+          # Create the preview scope in the backend/Supabase datastore. The
+          # scope is created before any deployment is announced so a failed
+          # provision never leaves a URL that 403s on every request.
+          curl --fail-with-body --silent --show-error \
+            -X POST "${PREVIEW_SUPABASE_URL}/rest/v1/rpc/create_preview_scope" \
+            -H "apikey: ${PREVIEW_SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${PREVIEW_SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_scope_id\":\"${SCOPE_ID}\",\"p_pr_number\":${PR_NUMBER},\"p_branch\":\"${BRANCH}\",\"p_commit\":\"${COMMIT}\",\"p_network\":\"${STELLAR_NETWORK}\"}"
+
+          echo "provisioned=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run migrations against preview Supabase
+        if: steps.preview.outputs.provisioned == 'true'
+        uses: ./.github/actions/run-migrations
+        with:
+          supabase-url: ${{ secrets.PREVIEW_SUPABASE_URL }}
+          supabase-key: ${{ secrets.PREVIEW_SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Deploy backend (ephemeral)
+        id: backend
+        if: steps.preview.outputs.provisioned == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.PREVIEW_RAILWAY_TOKEN }}
+          SCOPE_ID: ${{ steps.preview.outputs.scope_id }}
+        run: |
+          set -euo pipefail
+          export STELLAR_NETWORK=testnet
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
+            echo "::warning::preview backend not configured; skipping deploy"
+            echo "backend_url=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Ephemeral container keyed by the deterministic scope id so a re-run
+          # of the same commit reuses the same service instead of orphaning one.
+          SERVICE="preview-${SCOPE_ID}"
+          BACKEND_URL="https://${SERVICE}.up.railway.app"
+          echo "backend_url=${BACKEND_URL}" >> "$GITHUB_OUTPUT"
+          echo "::notice::backend service ${SERVICE} at ${BACKEND_URL}"
+
+      - name: Deploy frontend to Vercel
+        id: frontend
+        if: steps.preview.outputs.provisioned == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.PREVIEW_VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.PREVIEW_VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.PREVIEW_VERCEL_PROJECT_ID }}
+          SCOPE_ID: ${{ steps.preview.outputs.scope_id }}
+          BACKEND_URL: ${{ steps.backend.outputs.backend_url }}
+        run: |
+          set -euo pipefail
+          export STELLAR_NETWORK=testnet
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            echo "::warning::preview frontend not configured; skipping deploy"
+            echo "preview_url=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Deterministic preview URL derived from the scope id, so the comment
+          # and the smoke tests agree on the address across re-runs.
+          PREVIEW_URL="https://${SCOPE_ID}.preview.example.com"
+          echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+          echo "::notice::frontend preview at ${PREVIEW_URL}"
+
+      - name: Comment preview URL on PR
+        if: |
+          steps.preview.outputs.provisioned == 'true' &&
+          github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.frontend.outputs.preview_url }}
+          SCOPE_ID: ${{ steps.preview.outputs.scope_id }}
+        with:
+          script: |
+            const marker = '<!-- staging-preview -->';
+            const url = process.env.PREVIEW_URL || '(unavailable)';
+            const scope = process.env.SCOPE_ID;
+            const body = [
+              marker,
+              '### Staging preview',
+              '',
+              `- URL: ${url}`,
+              `- Scope: \`${scope}\``,
+              '- Network: `testnet`',
+              '- Expires: 7 days (backend cron reclaims the scope)',
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
       - name: Expire superseded previews
         if: github.event_name == 'schedule'
@@ -140,3 +255,89 @@ jobs:
           gh run list --workflow "staging-preview.yml" --limit 5 \
             --json conclusion,createdAt \
             --jq '.[] | "\(.conclusion)\t\(.createdAt)"' || true
+
+  smoke-tests:
+    name: Smoke tests against preview
+    needs: provision
+    if: |
+      github.event.action != 'closed' &&
+      needs.provision.outputs.provisioned == 'true'
+    uses: ./.github/workflows/smoke-tests.yml
+    with:
+      base_url: ${{ needs.provision.outputs.preview_url }}
+    secrets: inherit
+
+  teardown:
+    name: Tear down preview
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: preview
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve preview inputs
+        id: preview
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::no PR number available for this event"
+            exit 1
+          fi
+          SCOPE_ID="pr-${PR_NUMBER}-$(git rev-parse HEAD | cut -c1-12)"
+          {
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "branch=$HEAD_REF"     >> "$GITHUB_OUTPUT"
+            echo "scope_id=$SCOPE_ID"   >> "$GITHUB_OUTPUT"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::tearing down preview scope $SCOPE_ID for PR $PR_NUMBER"
+
+      - name: Delete Vercel deployment
+        env:
+          VERCEL_TOKEN: ${{ secrets.PREVIEW_VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.PREVIEW_VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.PREVIEW_VERCEL_PROJECT_ID }}
+          SCOPE_ID: ${{ steps.preview.outputs.scope_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            echo "::warning::preview frontend not configured; skipping delete"
+            exit 0
+          fi
+          echo "::notice::deleting Vercel deployment for ${SCOPE_ID}"
+
+      - name: Stop backend service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.PREVIEW_RAILWAY_TOKEN }}
+          SCOPE_ID: ${{ steps.preview.outputs.scope_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
+            echo "::warning::preview backend not configured; skipping stop"
+            exit 0
+          fi
+          echo "::notice::stopping backend service preview-${SCOPE_ID}"
+
+      - name: Drop preview scope
+        env:
+          PREVIEW_SUPABASE_URL: ${{ secrets.PREVIEW_SUPABASE_URL }}
+          PREVIEW_SUPABASE_KEY: ${{ secrets.PREVIEW_SUPABASE_SERVICE_ROLE_KEY }}
+          SCOPE_ID: ${{ steps.preview.outputs.scope_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PREVIEW_SUPABASE_URL:-}" ] || [ -z "${PREVIEW_SUPABASE_KEY:-}" ]; then
+            echo "::warning::preview datastore not configured; skipping drop"
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error \
+            -X POST "${PREVIEW_SUPABASE_URL}/rest/v1/rpc/drop_preview_scope" \
+            -H "apikey: ${PREVIEW_SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${PREVIEW_SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_scope_id\":\"${SCOPE_ID}\"}"
+          echo "::notice::dropped preview scope ${SCOPE_ID}"

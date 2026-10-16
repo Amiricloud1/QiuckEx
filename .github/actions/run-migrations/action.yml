@@ -14,6 +14,10 @@ inputs:
   git_sha:
     description: Git SHA being deployed
     required: true
+  preview_scope:
+    description: Optional scope for preview migrations (e.g. PR number or branch)
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -36,9 +40,14 @@ runs:
       shell: bash
       env:
         SUPABASE_ACCESS_TOKEN: ${{ inputs.supabase_service_key }}
+        PREVIEW_SCOPE: ${{ inputs.preview_scope }}
       run: |
         echo "::group::Migration output"
-        supabase db push --include-all 2>&1 | tee /tmp/migration.log
+        if [ -n "$PREVIEW_SCOPE" ]; then
+          supabase db push --include-all --scope "$PREVIEW_SCOPE" 2>&1 | tee /tmp/migration.log
+        else
+          supabase db push --include-all 2>&1 | tee /tmp/migration.log
+        fi
         echo "::endgroup::"
 
         STATUS="${PIPESTATUS[0]}"
@@ -49,4 +58,4 @@ runs:
     - name: Log migration metadata
       shell: bash
       run: |
-        echo "::notice title=Migration [${{ inputs.environment }}]::Applied ${{ steps.migrate.outputs.migrations_applied }} migration(s) | sha=${{ inputs.git_sha }} | env=${{ inputs.environment }} | ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "::notice title=Migration [${{ inputs.environment }}]::Applied ${{ steps.migrate.outputs.migrations_applied }} migration(s) | sha=${{ inputs.git_sha }} | env=${{ inputs.environment }} | scope=${{ inputs.preview_scope }} | ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
