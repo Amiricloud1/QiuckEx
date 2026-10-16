@@ -30,6 +30,26 @@ export function generateCorrelationId(): string {
 }
 
 /**
+ * Strict validation for an inbound correlation ID.
+ *
+ * Accepts only RFC 4122 v4 UUIDs (case-insensitive). Anything else — empty
+ * strings, whitespace, arbitrary tokens, or UUIDs of other versions — is
+ * rejected so the middleware can safely fall back to a freshly generated ID.
+ *
+ * Exported so the middleware and tests share a single definition of what
+ * constitutes an acceptable inbound ID.
+ */
+export function isValidCorrelationId(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+/**
  * Return the correlation ID for the currently executing request, or undefined
  * when invoked outside of a request scope (e.g. background workers).
  */

@@ -1,4 +1,5 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
+import { createHash } from "crypto";
 import { Horizon, Keypair } from "@stellar/stellar-sdk";
 import {
   SupabaseService,
@@ -24,11 +25,30 @@ import {
   UsernameValidationError,
   UsernameErrorCode,
   UsernameClaimInvalidError,
+  ProfileVisibilityError,
+  ProfileVisibilityErrorCode,
+  KeyRotationError,
+  KeyRotationErrorCode,
 } from "./errors";
 import { ProfileSettingsDto } from "../dto/username/profile-settings.dto";
+import { MetricsService } from "../metrics/metrics.service";
 
 const CLAIM_TOLERANCE_MS = 5 * 60 * 1000;
 const CLAIM_PREFIX = "QuickEx username claim";
+
+type DiscoveryOperation =
+  | "search"
+  | "trending"
+  | "recently_active"
+  | "featured";
+
+/**
+ * Hash a value (e.g. a search query) so it can be logged for correlation
+ * without exposing the raw, potentially PII-bearing value.
+ */
+function hashForLog(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
 
 export interface UsernameRow {
   id: string;
@@ -39,12 +59,68 @@ export interface UsernameRow {
 
 @Injectable()
 export class UsernamesService {
+  private readonly logger = new Logger(UsernamesService.name);
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly config: AppConfigService,
     private readonly cache: DiscoveryCacheService,
     private readonly rankingService: UsernameRankingService,
+    private readonly metrics: MetricsService,
   ) {}
+
+  /**
+   * Emit structured logs and metrics for a discovery call without logging PII.
+   * `queryHash` is a hashed form of any user-supplied query string.
+   */
+  private recordDiscovery(
+    operation: DiscoveryOperation,
+    startedAt: number,
+    outcome: {
+      cacheHit: boolean;
+      resultCount: number;
+      queryHash?: string;
+      failureReason?: string;
+    },
+  ): void {
+    const latencyMs = Date.now() - startedAt;
+    const status = outcome.failureReason ? "failure" : "success";
+    const labels = {
+      operation,
+      status,
+      cache: outcome.cacheHit ? "hit" : "miss",
+    };
+
+    this.metrics.incrementCounter("discovery_requests_total", 1, labels);
+    this.metrics.observeHistogram(
+      "discovery_request_duration_ms",
+      latencyMs,
+      labels,
+    );
+    this.metrics.observeHistogram(
+      "discovery_result_count",
+      outcome.resultCount,
+      labels,
+    );
+
+    if (outcome.failureReason) {
+      this.metrics.incrementCounter("discovery_failures_total", 1, {
+        operation,
+        reason: outcome.failureReason,
+      });
+    }
+
+    this.logger.log({
+      event: "discovery_call",
+      operation,
+      status,
+      cache: labels.cache,
+      latencyMs,
+      resultCount: outcome.resultCount,
+      queryHash: outcome.queryHash,
+      failureReason: outcome.failureReason,
+    });
+  }
 
   /**
    * Normalize username for storage (lowercase).
@@ -172,19 +248,134 @@ export class UsernamesService {
     | { status: "updated"; profile: EditableProfileRecord }
     | { status: "conflict" | "not_found" }
   > {
-    return this.supabase.updateProfileSettings(
+    const normalized = this.normalizeUsername(dto.username);
+    const startedAt = Date.now();
+
+    // Enforce ownership: the caller must own the username they are editing.
+    const owned = await this.listByPublicKey(dto.publicKey);
+    const existing = owned.find((u) => u.username === normalized);
+
+    if (!existing) {
+      this.logProfileUpdate("not_found", normalized, dto.publicKey, startedAt, {
+        reason: "ownership_or_missing",
+      });
+      return { status: "not_found" };
+    }
+
+    const current = await this.supabase.getProfileSettings(dto.publicKey);
+    const currentRecord = current.find((p) => p.username === normalized);
+
+    if (!currentRecord) {
+      this.logProfileUpdate("not_found", normalized, dto.publicKey, startedAt, {
+        reason: "settings_missing",
+      });
+      return { status: "not_found" };
+    }
+
+    const nextSettings = {
+      profile_primary_color: dto.primaryColor,
+      avatar_url: dto.avatarUrl?.trim() || null,
+      bio: dto.bio,
+      twitter_handle: dto.twitterHandle,
+      discord_handle: dto.discordHandle,
+      github_handle: dto.githubHandle,
+    };
+
+    // Idempotency: identical payload at the same version is a no-op.
+    if (
+      currentRecord.profile_version === dto.profileVersion &&
+      this.isSameProfileSettings(currentRecord, nextSettings)
+    ) {
+      this.logProfileUpdate("noop", normalized, dto.publicKey, startedAt, {
+        version: dto.profileVersion,
+      });
+      return { status: "updated", profile: currentRecord };
+    }
+
+    // Optimistic concurrency: only apply when the stored version matches.
+    if (currentRecord.profile_version !== dto.profileVersion) {
+      this.logProfileUpdate("conflict", normalized, dto.publicKey, startedAt, {
+        expectedVersion: dto.profileVersion,
+        actualVersion: currentRecord.profile_version,
+      });
+      return { status: "conflict" };
+    }
+
+    const result = await this.supabase.updateProfileSettings(
       dto.publicKey,
-      this.normalizeUsername(dto.username),
+      normalized,
       dto.profileVersion,
-      {
-        profile_primary_color: dto.primaryColor,
-        avatar_url: dto.avatarUrl?.trim() || null,
-        bio: dto.bio,
-        twitter_handle: dto.twitterHandle,
-        discord_handle: dto.discordHandle,
-        github_handle: dto.githubHandle,
-      },
+      nextSettings,
     );
+
+    if (result.status === "updated") {
+      this.logProfileUpdate("updated", normalized, dto.publicKey, startedAt, {
+        version: dto.profileVersion,
+        nextVersion: dto.profileVersion + 1,
+      });
+    } else {
+      this.logProfileUpdate(result.status, normalized, dto.publicKey, startedAt, {
+        expectedVersion: dto.profileVersion,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Compare persisted profile settings against an incoming payload to detect
+   * idempotent (no-op) updates.
+   */
+  private isSameProfileSettings(
+    current: EditableProfileRecord,
+    next: {
+      profile_primary_color: string | null;
+      avatar_url: string | null;
+      bio: string | null;
+      twitter_handle: string | null;
+      discord_handle: string | null;
+      github_handle: string | null;
+    },
+  ): boolean {
+    const normalize = (value: string | null | undefined) =>
+      value === undefined || value === null || value === "" ? null : value;
+
+    return (
+      normalize(current.profile_primary_color) ===
+        normalize(next.profile_primary_color) &&
+      normalize(current.avatar_url) === normalize(next.avatar_url) &&
+      normalize(current.bio) === normalize(next.bio) &&
+      normalize(current.twitter_handle) === normalize(next.twitter_handle) &&
+      normalize(current.discord_handle) === normalize(next.discord_handle) &&
+      normalize(current.github_handle) === normalize(next.github_handle)
+    );
+  }
+
+  /**
+   * Structured logging/metrics for profile settings updates.
+   */
+  private logProfileUpdate(
+    outcome: "updated" | "conflict" | "not_found" | "noop",
+    username: string,
+    publicKey: string,
+    startedAt: number,
+    extra: Record<string, unknown> = {},
+  ): void {
+    const payload = {
+      event: "profile_settings_update",
+      outcome,
+      username,
+      publicKey,
+      durationMs: Date.now() - startedAt,
+      ...extra,
+    };
+    if (outcome === "updated" || outcome === "noop") {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(payload));
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn(JSON.stringify(payload));
+    }
   }
 
   async searchDiscovery(
@@ -270,11 +461,19 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: SearchProfileResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const normalizedQuery = this.normalizeUsername(query);
+    const queryHash = hashForLog(normalizedQuery);
 
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     if (!normalizedQuery || normalizedQuery.length < 2) {
+      this.recordDiscovery("search", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        queryHash,
+        failureReason: "invalid_query",
+      });
       throw new UsernameValidationError(
         UsernameErrorCode.INVALID_FORMAT,
         "Search query must be at least 2 characters",
@@ -287,13 +486,25 @@ export class UsernamesService {
 
     const cachedResults = this.cache.getSearchResults(normalizedQuery, fetchWindow);
     let results: SearchProfileResult[];
+    let cacheHit = false;
     if (cachedResults) {
       results = cachedResults;
+      cacheHit = true;
     } else {
-      results = await this.supabase.searchPublicUsernames(
-        normalizedQuery,
-        fetchWindow,
-      );
+      try {
+        results = await this.supabase.searchPublicUsernames(
+          normalizedQuery,
+          fetchWindow,
+        );
+      } catch (error) {
+        this.recordDiscovery("search", startedAt, {
+          cacheHit: false,
+          resultCount: 0,
+          queryHash,
+          failureReason: "backend_error",
+        });
+        throw error;
+      }
       this.cache.setSearchResults(normalizedQuery, fetchWindow, results);
     }
 
@@ -334,6 +545,12 @@ export class UsernamesService {
       });
     }
 
+    this.recordDiscovery("search", startedAt, {
+      cacheHit,
+      resultCount: data.length,
+      queryHash,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -346,9 +563,15 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: TrendingCreatorResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     if (timeWindowHours < 1 || timeWindowHours > 720) {
+      this.recordDiscovery("trending", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        failureReason: "invalid_time_window",
+      });
       throw new UsernameValidationError(
         UsernameErrorCode.INVALID_FORMAT,
         "Time window must be between 1 and 720 hours",
@@ -361,13 +584,24 @@ export class UsernamesService {
 
     const cachedResults = this.cache.getTrendingResults(timeWindowHours, fetchWindow);
     let results: TrendingCreatorResult[];
+    let cacheHit = false;
     if (cachedResults) {
       results = cachedResults;
+      cacheHit = true;
     } else {
-      results = await this.supabase.getTrendingCreators(
-        timeWindowHours,
-        fetchWindow,
-      );
+      try {
+        results = await this.supabase.getTrendingCreators(
+          timeWindowHours,
+          fetchWindow,
+        );
+      } catch (error) {
+        this.recordDiscovery("trending", startedAt, {
+          cacheHit: false,
+          resultCount: 0,
+          failureReason: "backend_error",
+        });
+        throw error;
+      }
       this.cache.setTrendingResults(timeWindowHours, fetchWindow, results);
     }
 
@@ -404,6 +638,11 @@ export class UsernamesService {
       ).toString("base64url");
     }
 
+    this.recordDiscovery("trending", startedAt, {
+      cacheHit,
+      resultCount: data.length,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -416,9 +655,15 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: SearchProfileResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     if (timeWindowHours < 1 || timeWindowHours > 168) {
+      this.recordDiscovery("recently_active", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        failureReason: "invalid_time_window",
+      });
       throw new UsernameValidationError(
         UsernameErrorCode.INVALID_FORMAT,
         "Time window must be between 1 and 168 hours",
@@ -431,13 +676,24 @@ export class UsernamesService {
 
     const cachedResults = this.cache.getRecentlyActiveResults(timeWindowHours, fetchWindow);
     let results: SearchProfileResult[];
+    let cacheHit = false;
     if (cachedResults) {
       results = cachedResults;
+      cacheHit = true;
     } else {
-      results = await this.supabase.getRecentlyActiveUsers(
-        timeWindowHours,
-        fetchWindow,
-      );
+      try {
+        results = await this.supabase.getRecentlyActiveUsers(
+          timeWindowHours,
+          fetchWindow,
+        );
+      } catch (error) {
+        this.recordDiscovery("recently_active", startedAt, {
+          cacheHit: false,
+          resultCount: 0,
+          failureReason: "backend_error",
+        });
+        throw error;
+      }
       this.cache.setRecentlyActiveResults(timeWindowHours, fetchWindow, results);
     }
 
@@ -477,6 +733,11 @@ export class UsernamesService {
       ).toString("base64url");
     }
 
+    this.recordDiscovery("recently_active", startedAt, {
+      cacheHit,
+      resultCount: data.length,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -489,11 +750,23 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: FeaturedProfileResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     const effectiveLimit = Math.min(100, Math.max(1, limit));
     const fetchWindow = decodedCursor ? 100 : effectiveLimit + 1;
-    const results = await this.supabase.getFeaturedUsernames(fetchWindow);
+
+    let results: FeaturedProfileResult[];
+    try {
+      results = await this.supabase.getFeaturedUsernames(fetchWindow);
+    } catch (error) {
+      this.recordDiscovery("featured", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        failureReason: "backend_error",
+      });
+      throw error;
+    }
 
     let windowed = results;
     if (decodedCursor) {
@@ -534,6 +807,11 @@ export class UsernamesService {
       ).toString("base64url");
     }
 
+    this.recordDiscovery("featured", startedAt, {
+      cacheHit: false,
+      resultCount: data.length,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -554,18 +832,300 @@ export class UsernamesService {
   }
 
   /**
-   * Toggle public profile visibility for a username.
+   * Set the visibility level (private | unlisted | public) for a username.
+   *
+   * - Verifies ownership against the wallet's registered usernames.
+   * - Is idempotent: repeated writes of the same level succeed without error.
+   * - Enforces optimistic concurrency via `expectedVersion` when provided.
+   * - Invalidates all discovery caches that may contain the username.
    */
-  async togglePublicProfile(
+  async setVisibility(
     username: string,
     publicKey: string,
-    isPublic: boolean,
-  ): Promise<void> {
+    level: ProfileVisibility,
+    expectedVersion?: number,
+  ): Promise<{ username: string; visibility: ProfileVisibility; version: number }> {
     const normalized = this.normalizeUsername(username);
 
-    // Verify ownership
+    if (!VISIBILITY_LEVELS.includes(level)) {
+      throw new ProfileVisibilityError(
+        ProfileVisibilityErrorCode.INVALID_VISIBILITY,
+        `Visibility must be one of: ${VISIBILITY_LEVELS.join(", ")}`,
+        "visibility",
+      );
+    }
+
+    await this.assertOwnership(normalized, publicKey);
+
+    const current = await this.supabase.getProfileVisibility(normalized);
+
+    // Idempotent: same level requested, no write needed.
+    if (current && current.visibility === level) {
+      if (
+        typeof expectedVersion === "number" &&
+        current.version !== expectedVersion
+      ) {
+        throw new ProfileVisibilityError(
+          ProfileVisibilityErrorCode.VERSION_CONFLICT,
+          "Profile visibility version conflict",
+          "profileVersion",
+        );
+      }
+      return {
+        username: normalized,
+        visibility: current.visibility,
+        version: current.version,
+      };
+    }
+
+    if (
+      typeof expectedVersion === "number" &&
+      current &&
+      current.version !== expectedVersion
+    ) {
+      throw new ProfileVisibilityError(
+        ProfileVisibilityErrorCode.VERSION_CONFLICT,
+        "Profile visibility version conflict",
+        "profileVersion",
+      );
+    }
+
+    const updated = await this.supabase.setProfileVisibility(normalized, level);
+
+    // Invalidate all caches that may contain this username so visibility
+    // changes are reflected immediately on subsequent reads.
+    this.cache.invalidateForUsername(normalized);
+
+    return {
+      username: normalized,
+      visibility: updated.visibility,
+      version: updated.version,
+    };
+  }
+
+  /**
+   * Read the current visibility level for a username.
+   */
+  async getVisibility(
+    username: string,
+  ): Promise<{ username: string; visibility: ProfileVisibility; version: number }> {
+    const normalized = this.normalizeUsername(username);
+    this.validateFormat(normalized);
+
+    const current = await this.supabase.getProfileVisibility(normalized);
+    if (!current) {
+      throw new ProfileVisibilityError(
+        ProfileVisibilityErrorCode.NOT_FOUND,
+        "Username not found",
+        "username",
+      );
+    }
+
+    return {
+      username: normalized,
+      visibility: current.visibility,
+      version: current.version,
+    };
+  }
+
+  /**
+   * Announce a key rotation. The old key remains valid until the grace period
+   * ends (or the rotation is activated/revoked). Replay-protected via nonce.
+   */
+  async announceKeyRotation(
+    username: string,
+    publicKey: string,
+    newPublicKey: string,
+    nonce: string,
+  ): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    await this.assertOwnership(normalized, publicKey);
+
+    if (!newPublicKey || newPublicKey === publicKey) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.INVALID_NEW_KEY,
+        "New public key must differ from the current key",
+        "newPublicKey",
+      );
+    }
+    if (!nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.INVALID_NONCE,
+        "A nonce is required to announce a key rotation",
+        "nonce",
+      );
+    }
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+
+    // Replay protection: reject reuse of a previously seen nonce.
+    if (existing && existing.nonce === nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NONCE_REPLAYED,
+        "This key rotation nonce has already been used",
+        "nonce",
+      );
+    }
+
+    if (existing && existing.status === "active") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.ROTATION_ALREADY_ACTIVE,
+        "Key rotation is already active for this username",
+        "username",
+      );
+    }
+
+    const now = new Date();
+    const graceEndsAt = new Date(now.getTime() + KEY_ROTATION_GRACE_MS);
+
+    const record: KeyRotationRecord = {
+      username: normalized,
+      publicKey,
+      newPublicKey,
+      status: "announced",
+      announcedAt: now.toISOString(),
+      graceEndsAt: graceEndsAt.toISOString(),
+      activatedAt: null,
+      revokedAt: null,
+      nonce,
+    };
+
+    await this.supabase.upsertKeyRotation(record);
+    this.cache.invalidateForUsername(normalized);
+
+    return this.toKeyRotationStatus(record);
+  }
+
+  /**
+   * Activate a previously announced key rotation. The new key becomes the
+   * authoritative key; the old key is no longer accepted.
+   */
+  async activateKeyRotation(
+    username: string,
+    publicKey: string,
+    nonce: string,
+  ): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    await this.assertOwnership(normalized, publicKey);
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+    if (!existing || existing.status === "none") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NOT_ANNOUNCED,
+        "No key rotation has been announced for this username",
+        "username",
+      );
+    }
+    if (existing.status === "revoked") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.ROTATION_REVOKED,
+        "Key rotation has been revoked",
+        "username",
+      );
+    }
+    if (existing.status === "active") {
+      // Idempotent activation.
+      return this.toKeyRotationStatus(existing);
+    }
+    if (existing.nonce === nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NONCE_REPLAYED,
+        "This key rotation nonce has already been used",
+        "nonce",
+      );
+    }
+
+    const updated: KeyRotationRecord = {
+      ...existing,
+      status: "active",
+      activatedAt: new Date().toISOString(),
+      nonce,
+    };
+
+    await this.supabase.upsertKeyRotation(updated);
+    this.cache.invalidateForUsername(normalized);
+
+    return this.toKeyRotationStatus(updated);
+  }
+
+  /**
+   * Revoke an announced or active key rotation, restoring the original key.
+   */
+  async revokeKeyRotation(
+    username: string,
+    publicKey: string,
+    nonce: string,
+  ): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    await this.assertOwnership(normalized, publicKey);
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+    if (!existing || existing.status === "none") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NOT_ANNOUNCED,
+        "No key rotation has been announced for this username",
+        "username",
+      );
+    }
+    if (existing.status === "revoked") {
+      // Idempotent revoke.
+      return this.toKeyRotationStatus(existing);
+    }
+    if (existing.nonce === nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NONCE_REPLAYED,
+        "This key rotation nonce has already been used",
+        "nonce",
+      );
+    }
+
+    const updated: KeyRotationRecord = {
+      ...existing,
+      status: "revoked",
+      revokedAt: new Date().toISOString(),
+      nonce,
+    };
+
+    await this.supabase.upsertKeyRotation(updated);
+    this.cache.invalidateForUsername(normalized);
+
+    return this.toKeyRotationStatus(updated);
+  }
+
+  /**
+   * Read the current key rotation status for a username.
+   */
+  async getKeyRotationStatus(username: string): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    this.validateFormat(normalized);
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+    if (!existing) {
+      return {
+        username: normalized,
+        publicKey: "",
+        newPublicKey: null,
+        status: "none",
+        announcedAt: null,
+        graceEndsAt: null,
+        activatedAt: null,
+        revokedAt: null,
+        oldKeyAccepted: false,
+      };
+    }
+
+    return this.toKeyRotationStatus(existing);
+  }
+
+  /**
+   * Verify ownership of a username by a wallet public key.
+   */
+  private async assertOwnership(
+    normalizedUsername: string,
+    publicKey: string,
+  ): Promise<void> {
     const usernames = await this.listByPublicKey(publicKey);
-    const owned = usernames.find((u) => u.username === normalized);
+    const owned = usernames.find((u) => u.username === normalizedUsername);
 
     if (!owned) {
       throw new UsernameValidationError(
@@ -574,12 +1134,29 @@ export class UsernamesService {
         "username",
       );
     }
+  }
 
-    await this.supabase.togglePublicProfile(normalized, isPublic);
+  private toKeyRotationStatus(record: KeyRotationRecord): KeyRotationStatus {
+    const now = Date.now();
+    const graceEndsAtMs = record.graceEndsAt
+      ? Date.parse(record.graceEndsAt)
+      : NaN;
+    const oldKeyAccepted =
+      record.status === "announced" &&
+      Number.isFinite(graceEndsAtMs) &&
+      now < graceEndsAtMs;
 
-    // Invalidate all caches that may contain this username so visibility
-    // changes are reflected immediately on subsequent reads.
-    this.cache.invalidateForUsername(normalized);
+    return {
+      username: record.username,
+      publicKey: record.publicKey,
+      newPublicKey: record.newPublicKey,
+      status: record.status,
+      announcedAt: record.announcedAt,
+      graceEndsAt: record.graceEndsAt,
+      activatedAt: record.activatedAt,
+      revokedAt: record.revokedAt,
+      oldKeyAccepted,
+    };
   }
 
   async getProfileByUsername(username: string): Promise<SearchProfileResult> {

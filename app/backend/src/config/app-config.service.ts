@@ -440,6 +440,29 @@ export class AppConfigService {
   }
 
   /**
+   * Whether the compatibility gate is enabled.
+   */
+  get compatibilityGateEnabled(): boolean {
+    return this.configService.get("COMPATIBILITY_GATE_ENABLED", { infer: true });
+  }
+
+  /**
+   * Compatibility gate enforcement mode.
+   */
+  get compatibilityGateMode(): "enforce" | "warn" | "off" {
+    return this.configService.get("COMPATIBILITY_GATE_MODE", { infer: true });
+  }
+
+  /**
+   * Raw JSON string describing the compatibility gate rules, or undefined if unset.
+   */
+  get compatibilityGateRulesJson(): string | undefined {
+    return this.configService.get("COMPATIBILITY_GATE_RULES_JSON", {
+      infer: true,
+    });
+  }
+
+  /**
    * Active rate-limit profile. Resolved from an explicit PROFILE/RATE_LIMIT_PROFILE
    * if provided, otherwise derived from the environment name / network so config
    * can be selected purely through environment variables.
