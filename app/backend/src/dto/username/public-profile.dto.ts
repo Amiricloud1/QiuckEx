@@ -1,6 +1,47 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 /**
+ * Explicit visibility level for a public profile
+ */
+export enum VisibilityLevel {
+  PUBLIC = 'public',
+  GRACE = 'grace',
+  PRIVATE = 'private',
+}
+
+/**
+ * DTO describing the visibility state of a public profile
+ */
+export class PublicProfileVisibilityDto {
+  @ApiProperty({
+    description: 'Explicit visibility level',
+    enum: VisibilityLevel,
+    example: VisibilityLevel.PUBLIC,
+  })
+  visibility: VisibilityLevel;
+
+  @ApiProperty({
+    description: 'Whether the profile is currently publicly visible',
+    example: true,
+  })
+  isPublic: boolean;
+
+  @ApiProperty({
+    description: 'Timestamp at which the current visibility took effect',
+    example: '2025-03-27T10:30:00Z',
+    required: false,
+  })
+  effectiveAt?: string;
+
+  @ApiProperty({
+    description: 'Timestamp at which the grace period ends (if applicable)',
+    example: '2025-04-03T10:30:00Z',
+    required: false,
+  })
+  graceEndsAt?: string;
+}
+
+/**
  * DTO representing a public user profile
  */
 export class PublicProfileDto {
@@ -62,4 +103,11 @@ export class PublicProfileDto {
     example: '2025-02-19T08:00:00Z',
   })
   createdAt: string;
+
+  @ApiProperty({
+    description: 'Visibility state of the profile',
+    type: PublicProfileVisibilityDto,
+    required: false,
+  })
+  visibilityState?: PublicProfileVisibilityDto;
 }

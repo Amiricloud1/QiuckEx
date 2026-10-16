@@ -338,6 +338,107 @@ and degraded-mode activations. No secrets or raw personal data are logged.
 `VERIFIED_PROFILE_METADATA` flag and is disabled on mainnet until the metadata
 migration and cache invalidation path have been verified on testnet.
 
+### 6. Visibility Semantics
+
+Visibility is a per-profile property that governs whether a profile appears in
+discovery surfaces. It is deliberately narrow: it controls *discoverability*,
+never *reachability*.
+
+**What visibility controls:**
+- Whether the profile is returned by `GET /username/search`
+- Whether the profile is returned by `GET /username/trending`
+- Whether the profile's verified metadata is exposed on discovery responses
+
+**What visibility does NOT control:**
+- Direct payment links. `GET /username/resolve/:username` resolves a username
+  regardless of `is_public`, so a private profile can still receive payments.
+- Rename redirects. Redirects are resolved independently of visibility.
+- Ownership or authorization. A private profile is still owned by its wallet and
+  can be renamed, toggled, or have its metadata written.
+
+**States:**
+- `is_public = false` (default): hidden from search and trending; resolvable and
+  payable.
+- `is_public = true`: eligible for search and trending, subject to the ranking
+  and similarity thresholds below.
+
+**Transition rules:**
+- Toggling is idempotent: setting `isPublic` to its current value is a no-op and
+  returns `{ "ok": true }`.
+- Toggling to `false` takes effect immediately for subsequent reads. Cached
+  discovery entries (`profile:search:*`, `profile:trending:*`) are invalidated
+  on the same transaction boundary so a hidden profile is not served from cache.
+- Toggling to `true` does not retroactively backfill historical activity;
+  trending only counts activity inside the requested `timeWindowHours`.
+- A profile that is not public is excluded from trending even if it has the
+  highest transaction volume in the window.
+
+**Stable errors:**
+- `400` malformed body or missing `isPublic`
+- `401` missing/invalid ownership proof
+- `403` `publicKey` does not own `username`
+- `404` `username` not found
+- `503` dependency failure (database unavailable) — safe to retry
+
+### 7. Key Rotation Lifecycle
+
+A profile's `publicKey` may rotate (for example after key compromise or routine
+custody migration). Rotation is a four-phase lifecycle: **announce**, **grace
+period**, **revoke**, and **replay protection**. Every phase is signed by the
+key that is currently authoritative, so a rotation can never be driven by an
+unauthenticated caller.
+
+**Phase 1 — Announce.** The owner signs a rotation announcement with the *old*
+key, authorizing the *new* key. The announcement is written to
+`profile_key_rotations` and the new key is recorded as `pending`. During this
+phase the old key remains authoritative for all writes; the new key cannot yet
+sign metadata or renames.
+
+**Phase 2 — Grace period.** Both keys are accepted for a bounded window
+(default 24h, configurable via `PROFILE_KEY_ROTATION_GRACE_HOURS`). The old key
+may still sign metadata writes and renames; the new key may also sign them. This
+lets clients holding either key continue to operate while they migrate. The
+grace window is recorded as `grace_expires_at` on the rotation row.
+
+**Phase 3 — Revoke.** Once the grace window elapses (or the owner explicitly
+finalizes), the old key is revoked: it is removed from the accepted-signer set
+and any subsequent write signed with it is rejected with `403`. The new key
+becomes the sole authoritative signer. Revocation is monotonic — a revoked key
+cannot be reinstated by replaying an earlier announcement.
+
+**Phase 4 — Replay protection.** Every rotation carries a monotonically
+increasing `rotationVersion` and a unique `rotationId`. Writes are keyed by
+`(publicKey, rotationVersion, rotationId)`:
+- Replaying an announcement that has already been applied returns the original
+  result without mutating state.
+- A `rotationVersion` lower than or equal to the stored version is rejected with
+  `409`.
+- A signature envelope whose `expiresAt` has passed is rejected with `410`.
+- Announcements are single-use: once a rotation is finalized, the same
+  `rotationId` cannot start a new rotation.
+
+**Atomicity:** Announce, finalize, and revoke each happen in a single
+transaction. If the rotation row cannot be written, the key state is left
+unchanged so a profile is never left without an authoritative signer.
+
+**Stable errors:**
+- `400` malformed body or invalid rotation fields
+- `401` missing/invalid signature envelope
+- `403` signature does not match the currently authoritative key
+- `404` `username` not found
+- `409` stale `rotationVersion` or already-used `rotationId`
+- `410` expired signature envelope or grace window elapsed for the old key
+- `503` dependency failure (database unavailable) — safe to retry
+
+**Observability:** Structured logs record `publicKey` (hashed), `username`,
+`rotationId`, `rotationVersion`, phase, outcome, and latency. Metrics track
+rotation announce/finalize/revoke counts, grace-period activations, replay
+rejections, and rotation latency. No secrets or raw personal data are logged.
+
+**Feature gating:** Key rotation is gated behind the `PROFILE_KEY_ROTATION`
+flag and is disabled on mainnet until the rotation migration and grace-period
+handling have been verified on testnet.
+
 ## Database Changes
 
 ### Migration 1: `20250327000000_add_username_visibility.sql`
@@ -374,6 +475,18 @@ Adds verified metadata storage for public profiles:
 - `metadata_version` starts at 1 and increments on each accepted write
 - Backfill is a no-op; rows are created only on the first verified write
 
+### Migration 5: `20250327000004_add_profile_key_rotations.sql`
+Adds the key-rotation lifecycle state for public profiles:
+- `profile_key_rotations` table: `rotation_id` (PK), `username` (FK to
+  `usernames.username`), `old_public_key`, `new_public_key`, `rotation_version`
+  (BIGINT), `phase` (`announced` | `grace` | `revoked`), `announced_at`,
+  `grace_expires_at`, `revoked_at`
+- Unique index on `(username, rotation_version)` to enforce monotonic versions
+- Unique index on `rotation_id` to make announcements single-use
+- Partial index on `phase` for pending rotations to keep finalize/revoke scans
+  cheap
+- Backfill is a no-op; rows are created only on the first announcement
+
 ## Architecture
 
 ### DTOs Created
@@ -401,6 +514,12 @@ New methods:
 - `updateVerifiedMetadata(username, dto)`: Verifies the owner signature, enforces
   monotonic `metadataVersion`, writes metadata, and invalidates cache entries
 - `getVerifiedMetadata(username)`: Read-through cache lookup with database fallback
+- `announceKeyRotation(username, dto)`: Records a signed rotation announcement and
+  moves the profile into the grace period
+- `finalizeKeyRotation(username, dto)`: Revokes the old key once the grace window
+  elapses or the owner explicitly finalizes
+- `resolveAuthoritativeKey(username)`: Returns the currently accepted signer set
+  (old key during grace, new key after revoke)
 
 #### `SupabaseService`
 New methods:
@@ -412,6 +531,9 @@ New methods:
 - `resolveUsernameRedirect(username)`: Redirect lookup
 - `upsertProfileMetadata(...)`: Atomic metadata write with version guard
 - `getProfileMetadata(username)`: Metadata read for cache population
+- `insertKeyRotation(...)`: Atomic rotation announcement with version guard
+- `finalizeKeyRotation(...)`: Atomic revoke of the old key
+- `getActiveKeyRotation(username)`: Rotation state lookup for signer resolution
 
 ### Controller Updates
 `UsernamesController` now exposes:
@@ -422,6 +544,8 @@ New methods:
 - `GET /username/resolve/:username`: Canonical resolution for payment links
 - `PUT /username/:username/metadata`: Verified metadata write with cache invalidation
 - `GET /username/:username/metadata`: Verified metadata read (cache-backed)
+- `POST /username/:username/rotate-key`: Announce a key rotation
+- `POST /username/:username/rotate-key/finalize`: Revoke the old key after grace
 
 All endpoints include:
 - Swagger/OpenAPI documentation

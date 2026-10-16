@@ -430,3 +430,276 @@ fn test_stealth_register_fails_when_paused() {
 
     assert_eq!(err, QuickexError::ContractPaused);
 }
+
+// ---------------------------------------------------------------------------
+// Announce / Activate / Revoke lifecycle tests
+// ---------------------------------------------------------------------------
+
+/// Happy path: announce a stealth payment, then activate it.
+#[test]
+fn test_announce_then_activate_happy_path() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+    let amount: i128 = 700;
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[21u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[22u8; 32]);
+    let stealth_address = compute_stealth_address(&env, &eph_pub, &spend_pub);
+
+    mint(&env, &token, &sender, amount);
+
+    client.announce_stealth_payment(
+        &make_params(
+            sender.clone(),
+            token.clone(),
+            amount,
+            amount,
+            eph_pub.clone(),
+            spend_pub.clone(),
+            stealth_address.clone(),
+            0,
+        ),
+        &2001,
+        &TEST_VALID_UNTIL,
+    );
+
+    assert_eq!(
+        client.get_stealth_status(&stealth_address),
+        Some(EscrowStatus::Pending)
+    );
+
+    client.activate_stealth_payment(&sender, &stealth_address, &2002, &TEST_VALID_UNTIL);
+
+    assert_eq!(
+        client.get_stealth_status(&stealth_address),
+        Some(EscrowStatus::Pending)
+    );
+}
+
+/// Announcing the same stealth address twice must fail (replay protection).
+#[test]
+fn test_announce_duplicate_fails() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+    let amount: i128 = 250;
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[23u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[24u8; 32]);
+    let stealth_address = compute_stealth_address(&env, &eph_pub, &spend_pub);
+
+    mint(&env, &token, &sender, amount * 2);
+
+    client.announce_stealth_payment(
+        &make_params(
+            sender.clone(),
+            token.clone(),
+            amount,
+            amount,
+            eph_pub.clone(),
+            spend_pub.clone(),
+            stealth_address.clone(),
+            0,
+        ),
+        &2001,
+        &TEST_VALID_UNTIL,
+    );
+
+    let err = client
+        .try_announce_stealth_payment(
+            &make_params(
+                sender,
+                token,
+                amount,
+                amount,
+                eph_pub,
+                spend_pub,
+                stealth_address,
+                0,
+            ),
+            &2002,
+            &TEST_VALID_UNTIL,
+        )
+        .unwrap_err()
+        .unwrap();
+
+    assert_eq!(err, QuickexError::StealthAddressAlreadyUsed);
+}
+
+/// Revoking before the grace period expires must fail.
+#[test]
+fn test_revoke_before_grace_expiry_fails() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+    let amount: i128 = 350;
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[25u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[26u8; 32]);
+    let stealth_address = compute_stealth_address(&env, &eph_pub, &spend_pub);
+
+    mint(&env, &token, &sender, amount);
+
+    client.announce_stealth_payment(
+        &make_params(
+            sender.clone(),
+            token,
+            amount,
+            amount,
+            eph_pub,
+            spend_pub,
+            stealth_address.clone(),
+            1000,
+        ),
+        &2001,
+        &TEST_VALID_UNTIL,
+    );
+
+    let err = client
+        .try_revoke_stealth_payment(&sender, &stealth_address, &2002, &TEST_VALID_UNTIL)
+        .unwrap_err()
+        .unwrap();
+
+    assert_eq!(err, QuickexError::GracePeriodNotExpired);
+}
+
+/// Revoking after the grace period expires must succeed and refund the sender.
+#[test]
+fn test_revoke_after_grace_expiry_succeeds() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+    let amount: i128 = 450;
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[27u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[28u8; 32]);
+    let stealth_address = compute_stealth_address(&env, &eph_pub, &spend_pub);
+
+    mint(&env, &token, &sender, amount);
+
+    client.announce_stealth_payment(
+        &make_params(
+            sender.clone(),
+            token.clone(),
+            amount,
+            amount,
+            eph_pub,
+            spend_pub,
+            stealth_address.clone(),
+            100,
+        ),
+        &2001,
+        &TEST_VALID_UNTIL,
+    );
+
+    env.ledger().with_mut(|l| l.timestamp += 200);
+
+    client.revoke_stealth_payment(&sender, &stealth_address, &2002, &TEST_VALID_UNTIL);
+
+    assert_eq!(
+        client.get_stealth_status(&stealth_address),
+        Some(EscrowStatus::Refunded)
+    );
+
+    let token_client = token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&sender), amount);
+}
+
+/// Revoking from an unauthorized caller must fail.
+#[test]
+fn test_revoke_unauthorized_caller_fails() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let amount: i128 = 550;
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[29u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[30u8; 32]);
+    let stealth_address = compute_stealth_address(&env, &eph_pub, &spend_pub);
+
+    mint(&env, &token, &sender, amount);
+
+    client.announce_stealth_payment(
+        &make_params(
+            sender,
+            token,
+            amount,
+            amount,
+            eph_pub,
+            spend_pub,
+            stealth_address.clone(),
+            100,
+        ),
+        &2001,
+        &TEST_VALID_UNTIL,
+    );
+
+    env.ledger().with_mut(|l| l.timestamp += 200);
+
+    let err = client
+        .try_revoke_stealth_payment(&attacker, &stealth_address, &2002, &TEST_VALID_UNTIL)
+        .unwrap_err()
+        .unwrap();
+
+    assert_eq!(err, QuickexError::Unauthorized);
+}
+
+/// Announcing with a malformed (mismatched) stealth address must fail.
+#[test]
+fn test_announce_malformed_stealth_address_fails() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+    let amount: i128 = 650;
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[31u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[32u8; 32]);
+    let wrong_stealth: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+
+    mint(&env, &token, &sender, amount);
+
+    let err = client
+        .try_announce_stealth_payment(
+            &make_params(
+                sender,
+                token,
+                amount,
+                amount,
+                eph_pub,
+                spend_pub,
+                wrong_stealth,
+                0,
+            ),
+            &2001,
+            &TEST_VALID_UNTIL,
+        )
+        .unwrap_err()
+        .unwrap();
+
+    assert_eq!(err, QuickexError::StealthAddressMismatch);
+}
+
+/// Announcing with a zero amount must fail (malformed input).
+#[test]
+fn test_announce_zero_amount_fails() {
+    let (env, client) = setup();
+    let token = create_test_token(&env);
+    let sender = Address::generate(&env);
+
+    let eph_pub: BytesN<32> = BytesN::from_array(&env, &[33u8; 32]);
+    let spend_pub: BytesN<32> = BytesN::from_array(&env, &[34u8; 32]);
+    let stealth_address = compute_stealth_address(&env, &eph_pub, &spend_pub);
+
+    let err = client
+        .try_announce_stealth_payment(
+            &make_params(sender, token, 0, 0, eph_pub, spend_pub, stealth_address, 0),
+            &2001,
+            &TEST_VALID_UNTIL,
+        )
+        .unwrap_err()
+        .unwrap();
+
+    assert_eq!(err, QuickexError::InvalidAmount);
+}

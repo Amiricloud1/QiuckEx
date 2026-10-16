@@ -17,3 +17,5 @@ export * from "./recently-active-query.dto";
 export * from "./recently-active-response.dto";
 export * from "./featured-usernames-query.dto";
 export * from "./featured-usernames-response.dto";
+export * from "./rotate-key.dto";
+export * from "./rotate-key-response.dto";

@@ -25,6 +25,10 @@ import {
   UsernameValidationError,
   UsernameErrorCode,
   UsernameClaimInvalidError,
+  ProfileVisibilityError,
+  ProfileVisibilityErrorCode,
+  KeyRotationError,
+  KeyRotationErrorCode,
 } from "./errors";
 import { ProfileSettingsDto } from "../dto/username/profile-settings.dto";
 import { MetricsService } from "../metrics/metrics.service";
@@ -828,18 +832,300 @@ export class UsernamesService {
   }
 
   /**
-   * Toggle public profile visibility for a username.
+   * Set the visibility level (private | unlisted | public) for a username.
+   *
+   * - Verifies ownership against the wallet's registered usernames.
+   * - Is idempotent: repeated writes of the same level succeed without error.
+   * - Enforces optimistic concurrency via `expectedVersion` when provided.
+   * - Invalidates all discovery caches that may contain the username.
    */
-  async togglePublicProfile(
+  async setVisibility(
     username: string,
     publicKey: string,
-    isPublic: boolean,
-  ): Promise<void> {
+    level: ProfileVisibility,
+    expectedVersion?: number,
+  ): Promise<{ username: string; visibility: ProfileVisibility; version: number }> {
     const normalized = this.normalizeUsername(username);
 
-    // Verify ownership
+    if (!VISIBILITY_LEVELS.includes(level)) {
+      throw new ProfileVisibilityError(
+        ProfileVisibilityErrorCode.INVALID_VISIBILITY,
+        `Visibility must be one of: ${VISIBILITY_LEVELS.join(", ")}`,
+        "visibility",
+      );
+    }
+
+    await this.assertOwnership(normalized, publicKey);
+
+    const current = await this.supabase.getProfileVisibility(normalized);
+
+    // Idempotent: same level requested, no write needed.
+    if (current && current.visibility === level) {
+      if (
+        typeof expectedVersion === "number" &&
+        current.version !== expectedVersion
+      ) {
+        throw new ProfileVisibilityError(
+          ProfileVisibilityErrorCode.VERSION_CONFLICT,
+          "Profile visibility version conflict",
+          "profileVersion",
+        );
+      }
+      return {
+        username: normalized,
+        visibility: current.visibility,
+        version: current.version,
+      };
+    }
+
+    if (
+      typeof expectedVersion === "number" &&
+      current &&
+      current.version !== expectedVersion
+    ) {
+      throw new ProfileVisibilityError(
+        ProfileVisibilityErrorCode.VERSION_CONFLICT,
+        "Profile visibility version conflict",
+        "profileVersion",
+      );
+    }
+
+    const updated = await this.supabase.setProfileVisibility(normalized, level);
+
+    // Invalidate all caches that may contain this username so visibility
+    // changes are reflected immediately on subsequent reads.
+    this.cache.invalidateForUsername(normalized);
+
+    return {
+      username: normalized,
+      visibility: updated.visibility,
+      version: updated.version,
+    };
+  }
+
+  /**
+   * Read the current visibility level for a username.
+   */
+  async getVisibility(
+    username: string,
+  ): Promise<{ username: string; visibility: ProfileVisibility; version: number }> {
+    const normalized = this.normalizeUsername(username);
+    this.validateFormat(normalized);
+
+    const current = await this.supabase.getProfileVisibility(normalized);
+    if (!current) {
+      throw new ProfileVisibilityError(
+        ProfileVisibilityErrorCode.NOT_FOUND,
+        "Username not found",
+        "username",
+      );
+    }
+
+    return {
+      username: normalized,
+      visibility: current.visibility,
+      version: current.version,
+    };
+  }
+
+  /**
+   * Announce a key rotation. The old key remains valid until the grace period
+   * ends (or the rotation is activated/revoked). Replay-protected via nonce.
+   */
+  async announceKeyRotation(
+    username: string,
+    publicKey: string,
+    newPublicKey: string,
+    nonce: string,
+  ): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    await this.assertOwnership(normalized, publicKey);
+
+    if (!newPublicKey || newPublicKey === publicKey) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.INVALID_NEW_KEY,
+        "New public key must differ from the current key",
+        "newPublicKey",
+      );
+    }
+    if (!nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.INVALID_NONCE,
+        "A nonce is required to announce a key rotation",
+        "nonce",
+      );
+    }
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+
+    // Replay protection: reject reuse of a previously seen nonce.
+    if (existing && existing.nonce === nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NONCE_REPLAYED,
+        "This key rotation nonce has already been used",
+        "nonce",
+      );
+    }
+
+    if (existing && existing.status === "active") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.ROTATION_ALREADY_ACTIVE,
+        "Key rotation is already active for this username",
+        "username",
+      );
+    }
+
+    const now = new Date();
+    const graceEndsAt = new Date(now.getTime() + KEY_ROTATION_GRACE_MS);
+
+    const record: KeyRotationRecord = {
+      username: normalized,
+      publicKey,
+      newPublicKey,
+      status: "announced",
+      announcedAt: now.toISOString(),
+      graceEndsAt: graceEndsAt.toISOString(),
+      activatedAt: null,
+      revokedAt: null,
+      nonce,
+    };
+
+    await this.supabase.upsertKeyRotation(record);
+    this.cache.invalidateForUsername(normalized);
+
+    return this.toKeyRotationStatus(record);
+  }
+
+  /**
+   * Activate a previously announced key rotation. The new key becomes the
+   * authoritative key; the old key is no longer accepted.
+   */
+  async activateKeyRotation(
+    username: string,
+    publicKey: string,
+    nonce: string,
+  ): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    await this.assertOwnership(normalized, publicKey);
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+    if (!existing || existing.status === "none") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NOT_ANNOUNCED,
+        "No key rotation has been announced for this username",
+        "username",
+      );
+    }
+    if (existing.status === "revoked") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.ROTATION_REVOKED,
+        "Key rotation has been revoked",
+        "username",
+      );
+    }
+    if (existing.status === "active") {
+      // Idempotent activation.
+      return this.toKeyRotationStatus(existing);
+    }
+    if (existing.nonce === nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NONCE_REPLAYED,
+        "This key rotation nonce has already been used",
+        "nonce",
+      );
+    }
+
+    const updated: KeyRotationRecord = {
+      ...existing,
+      status: "active",
+      activatedAt: new Date().toISOString(),
+      nonce,
+    };
+
+    await this.supabase.upsertKeyRotation(updated);
+    this.cache.invalidateForUsername(normalized);
+
+    return this.toKeyRotationStatus(updated);
+  }
+
+  /**
+   * Revoke an announced or active key rotation, restoring the original key.
+   */
+  async revokeKeyRotation(
+    username: string,
+    publicKey: string,
+    nonce: string,
+  ): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    await this.assertOwnership(normalized, publicKey);
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+    if (!existing || existing.status === "none") {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NOT_ANNOUNCED,
+        "No key rotation has been announced for this username",
+        "username",
+      );
+    }
+    if (existing.status === "revoked") {
+      // Idempotent revoke.
+      return this.toKeyRotationStatus(existing);
+    }
+    if (existing.nonce === nonce) {
+      throw new KeyRotationError(
+        KeyRotationErrorCode.NONCE_REPLAYED,
+        "This key rotation nonce has already been used",
+        "nonce",
+      );
+    }
+
+    const updated: KeyRotationRecord = {
+      ...existing,
+      status: "revoked",
+      revokedAt: new Date().toISOString(),
+      nonce,
+    };
+
+    await this.supabase.upsertKeyRotation(updated);
+    this.cache.invalidateForUsername(normalized);
+
+    return this.toKeyRotationStatus(updated);
+  }
+
+  /**
+   * Read the current key rotation status for a username.
+   */
+  async getKeyRotationStatus(username: string): Promise<KeyRotationStatus> {
+    const normalized = this.normalizeUsername(username);
+    this.validateFormat(normalized);
+
+    const existing = await this.supabase.getKeyRotation(normalized);
+    if (!existing) {
+      return {
+        username: normalized,
+        publicKey: "",
+        newPublicKey: null,
+        status: "none",
+        announcedAt: null,
+        graceEndsAt: null,
+        activatedAt: null,
+        revokedAt: null,
+        oldKeyAccepted: false,
+      };
+    }
+
+    return this.toKeyRotationStatus(existing);
+  }
+
+  /**
+   * Verify ownership of a username by a wallet public key.
+   */
+  private async assertOwnership(
+    normalizedUsername: string,
+    publicKey: string,
+  ): Promise<void> {
     const usernames = await this.listByPublicKey(publicKey);
-    const owned = usernames.find((u) => u.username === normalized);
+    const owned = usernames.find((u) => u.username === normalizedUsername);
 
     if (!owned) {
       throw new UsernameValidationError(
@@ -848,12 +1134,29 @@ export class UsernamesService {
         "username",
       );
     }
+  }
 
-    await this.supabase.togglePublicProfile(normalized, isPublic);
+  private toKeyRotationStatus(record: KeyRotationRecord): KeyRotationStatus {
+    const now = Date.now();
+    const graceEndsAtMs = record.graceEndsAt
+      ? Date.parse(record.graceEndsAt)
+      : NaN;
+    const oldKeyAccepted =
+      record.status === "announced" &&
+      Number.isFinite(graceEndsAtMs) &&
+      now < graceEndsAtMs;
 
-    // Invalidate all caches that may contain this username so visibility
-    // changes are reflected immediately on subsequent reads.
-    this.cache.invalidateForUsername(normalized);
+    return {
+      username: record.username,
+      publicKey: record.publicKey,
+      newPublicKey: record.newPublicKey,
+      status: record.status,
+      announcedAt: record.announcedAt,
+      graceEndsAt: record.graceEndsAt,
+      activatedAt: record.activatedAt,
+      revokedAt: record.revokedAt,
+      oldKeyAccepted,
+    };
   }
 
   async getProfileByUsername(username: string): Promise<SearchProfileResult> {

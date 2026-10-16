@@ -39,6 +39,9 @@ import {
   FeaturedUsernamesResponseDto,
   PublicProfileDto,
   ProfileSettingsDto,
+  UpdateVisibilityDto,
+  AnnounceKeyRotationDto,
+  RevokeKeyRotationDto,
 } from "../dto";
 import { UsernamesService } from "./usernames.service";
 import {
@@ -47,6 +50,9 @@ import {
   UsernameValidationError,
   UsernameErrorCode,
   UsernameClaimInvalidError,
+  KeyRotationDisabledError,
+  KeyRotationNotFoundError,
+  KeyRotationConflictError,
 } from "./errors";
 
 @ApiTags("usernames")
@@ -618,6 +624,7 @@ export class UsernamesController {
         return {
           username: profile.username,
           isPublic: false,
+          visibility: profile.visibility,
         };
       }
       return {
@@ -625,6 +632,7 @@ export class UsernamesController {
         username: profile.username,
         publicKey: profile.public_key,
         isPublic: true,
+        visibility: profile.visibility,
         lastActiveAt: profile.last_active_at || profile.created_at,
         createdAt: profile.created_at,
       };
