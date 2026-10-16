@@ -1,4 +1,5 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
+import { createHash } from "crypto";
 import { Horizon, Keypair } from "@stellar/stellar-sdk";
 import {
   SupabaseService,
@@ -26,9 +27,24 @@ import {
   UsernameClaimInvalidError,
 } from "./errors";
 import { ProfileSettingsDto } from "../dto/username/profile-settings.dto";
+import { MetricsService } from "../metrics/metrics.service";
 
 const CLAIM_TOLERANCE_MS = 5 * 60 * 1000;
 const CLAIM_PREFIX = "QuickEx username claim";
+
+type DiscoveryOperation =
+  | "search"
+  | "trending"
+  | "recently_active"
+  | "featured";
+
+/**
+ * Hash a value (e.g. a search query) so it can be logged for correlation
+ * without exposing the raw, potentially PII-bearing value.
+ */
+function hashForLog(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
 
 export interface UsernameRow {
   id: string;
@@ -39,12 +55,68 @@ export interface UsernameRow {
 
 @Injectable()
 export class UsernamesService {
+  private readonly logger = new Logger(UsernamesService.name);
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly config: AppConfigService,
     private readonly cache: DiscoveryCacheService,
     private readonly rankingService: UsernameRankingService,
+    private readonly metrics: MetricsService,
   ) {}
+
+  /**
+   * Emit structured logs and metrics for a discovery call without logging PII.
+   * `queryHash` is a hashed form of any user-supplied query string.
+   */
+  private recordDiscovery(
+    operation: DiscoveryOperation,
+    startedAt: number,
+    outcome: {
+      cacheHit: boolean;
+      resultCount: number;
+      queryHash?: string;
+      failureReason?: string;
+    },
+  ): void {
+    const latencyMs = Date.now() - startedAt;
+    const status = outcome.failureReason ? "failure" : "success";
+    const labels = {
+      operation,
+      status,
+      cache: outcome.cacheHit ? "hit" : "miss",
+    };
+
+    this.metrics.incrementCounter("discovery_requests_total", 1, labels);
+    this.metrics.observeHistogram(
+      "discovery_request_duration_ms",
+      latencyMs,
+      labels,
+    );
+    this.metrics.observeHistogram(
+      "discovery_result_count",
+      outcome.resultCount,
+      labels,
+    );
+
+    if (outcome.failureReason) {
+      this.metrics.incrementCounter("discovery_failures_total", 1, {
+        operation,
+        reason: outcome.failureReason,
+      });
+    }
+
+    this.logger.log({
+      event: "discovery_call",
+      operation,
+      status,
+      cache: labels.cache,
+      latencyMs,
+      resultCount: outcome.resultCount,
+      queryHash: outcome.queryHash,
+      failureReason: outcome.failureReason,
+    });
+  }
 
   /**
    * Normalize username for storage (lowercase).
@@ -385,11 +457,19 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: SearchProfileResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const normalizedQuery = this.normalizeUsername(query);
+    const queryHash = hashForLog(normalizedQuery);
 
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     if (!normalizedQuery || normalizedQuery.length < 2) {
+      this.recordDiscovery("search", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        queryHash,
+        failureReason: "invalid_query",
+      });
       throw new UsernameValidationError(
         UsernameErrorCode.INVALID_FORMAT,
         "Search query must be at least 2 characters",
@@ -402,13 +482,25 @@ export class UsernamesService {
 
     const cachedResults = this.cache.getSearchResults(normalizedQuery, fetchWindow);
     let results: SearchProfileResult[];
+    let cacheHit = false;
     if (cachedResults) {
       results = cachedResults;
+      cacheHit = true;
     } else {
-      results = await this.supabase.searchPublicUsernames(
-        normalizedQuery,
-        fetchWindow,
-      );
+      try {
+        results = await this.supabase.searchPublicUsernames(
+          normalizedQuery,
+          fetchWindow,
+        );
+      } catch (error) {
+        this.recordDiscovery("search", startedAt, {
+          cacheHit: false,
+          resultCount: 0,
+          queryHash,
+          failureReason: "backend_error",
+        });
+        throw error;
+      }
       this.cache.setSearchResults(normalizedQuery, fetchWindow, results);
     }
 
@@ -449,6 +541,12 @@ export class UsernamesService {
       });
     }
 
+    this.recordDiscovery("search", startedAt, {
+      cacheHit,
+      resultCount: data.length,
+      queryHash,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -461,9 +559,15 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: TrendingCreatorResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     if (timeWindowHours < 1 || timeWindowHours > 720) {
+      this.recordDiscovery("trending", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        failureReason: "invalid_time_window",
+      });
       throw new UsernameValidationError(
         UsernameErrorCode.INVALID_FORMAT,
         "Time window must be between 1 and 720 hours",
@@ -476,13 +580,24 @@ export class UsernamesService {
 
     const cachedResults = this.cache.getTrendingResults(timeWindowHours, fetchWindow);
     let results: TrendingCreatorResult[];
+    let cacheHit = false;
     if (cachedResults) {
       results = cachedResults;
+      cacheHit = true;
     } else {
-      results = await this.supabase.getTrendingCreators(
-        timeWindowHours,
-        fetchWindow,
-      );
+      try {
+        results = await this.supabase.getTrendingCreators(
+          timeWindowHours,
+          fetchWindow,
+        );
+      } catch (error) {
+        this.recordDiscovery("trending", startedAt, {
+          cacheHit: false,
+          resultCount: 0,
+          failureReason: "backend_error",
+        });
+        throw error;
+      }
       this.cache.setTrendingResults(timeWindowHours, fetchWindow, results);
     }
 
@@ -519,6 +634,11 @@ export class UsernamesService {
       ).toString("base64url");
     }
 
+    this.recordDiscovery("trending", startedAt, {
+      cacheHit,
+      resultCount: data.length,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -531,9 +651,15 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: SearchProfileResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     if (timeWindowHours < 1 || timeWindowHours > 168) {
+      this.recordDiscovery("recently_active", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        failureReason: "invalid_time_window",
+      });
       throw new UsernameValidationError(
         UsernameErrorCode.INVALID_FORMAT,
         "Time window must be between 1 and 168 hours",
@@ -546,13 +672,24 @@ export class UsernamesService {
 
     const cachedResults = this.cache.getRecentlyActiveResults(timeWindowHours, fetchWindow);
     let results: SearchProfileResult[];
+    let cacheHit = false;
     if (cachedResults) {
       results = cachedResults;
+      cacheHit = true;
     } else {
-      results = await this.supabase.getRecentlyActiveUsers(
-        timeWindowHours,
-        fetchWindow,
-      );
+      try {
+        results = await this.supabase.getRecentlyActiveUsers(
+          timeWindowHours,
+          fetchWindow,
+        );
+      } catch (error) {
+        this.recordDiscovery("recently_active", startedAt, {
+          cacheHit: false,
+          resultCount: 0,
+          failureReason: "backend_error",
+        });
+        throw error;
+      }
       this.cache.setRecentlyActiveResults(timeWindowHours, fetchWindow, results);
     }
 
@@ -592,6 +729,11 @@ export class UsernamesService {
       ).toString("base64url");
     }
 
+    this.recordDiscovery("recently_active", startedAt, {
+      cacheHit,
+      resultCount: data.length,
+    });
+
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }
 
@@ -604,11 +746,23 @@ export class UsernamesService {
     limit: number = 10,
     cursor?: string,
   ): Promise<{ data: FeaturedProfileResult[]; next_cursor: string | null; has_more: boolean }> {
+    const startedAt = Date.now();
     const decodedCursor = cursor ? decodeCursor(cursor) : null;
 
     const effectiveLimit = Math.min(100, Math.max(1, limit));
     const fetchWindow = decodedCursor ? 100 : effectiveLimit + 1;
-    const results = await this.supabase.getFeaturedUsernames(fetchWindow);
+
+    let results: FeaturedProfileResult[];
+    try {
+      results = await this.supabase.getFeaturedUsernames(fetchWindow);
+    } catch (error) {
+      this.recordDiscovery("featured", startedAt, {
+        cacheHit: false,
+        resultCount: 0,
+        failureReason: "backend_error",
+      });
+      throw error;
+    }
 
     let windowed = results;
     if (decodedCursor) {
@@ -648,6 +802,11 @@ export class UsernamesService {
         "utf-8",
       ).toString("base64url");
     }
+
+    this.recordDiscovery("featured", startedAt, {
+      cacheHit: false,
+      resultCount: data.length,
+    });
 
     return { data, next_cursor: nextCursor, has_more: hasMore };
   }

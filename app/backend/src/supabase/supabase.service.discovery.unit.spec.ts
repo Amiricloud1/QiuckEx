@@ -89,6 +89,71 @@ describe('SupabaseService discovery ranking', () => {
       expect(usernamesChain.order).toHaveBeenCalledWith('id', { ascending: true });
       expect(usernamesChain.limit).toHaveBeenCalledWith(10);
     });
+
+    it('orders featured profiles with null ranks after ranked ones, tie-broken by ascending id', async () => {
+      // The DB is expected to return rows already ordered by
+      // featured_rank asc (nulls last), id asc. This test pins that
+      // contract: null-ranked profiles must sort after ranked ones, and
+      // equal (or null) ranks must fall back to ascending id.
+      const profiles = [
+        { id: 'id-1', username: 'a', public_key: 'GAAA1', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true, featured_rank: 1 },
+        { id: 'id-2', username: 'b', public_key: 'GAAA2', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true, featured_rank: 2 },
+        { id: 'id-3', username: 'c', public_key: 'GAAA3', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true, featured_rank: null },
+        { id: 'id-4', username: 'd', public_key: 'GAAA4', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true, featured_rank: null },
+      ];
+      const usernamesChain = makeChain({ data: profiles, error: null });
+      const service = await createService(makeClient({ usernames: [usernamesChain] }));
+
+      const result = await service.getFeaturedUsernames(10);
+
+      expect(result.map((r) => r.id)).toEqual(['id-1', 'id-2', 'id-3', 'id-4']);
+      expect(usernamesChain.order).toHaveBeenCalledWith('featured_rank', { ascending: true, nullsFirst: false });
+      expect(usernamesChain.order).toHaveBeenCalledWith('id', { ascending: true });
+    });
+  });
+
+  describe('searchPublicUsernames', () => {
+    it('returns RPC results with a normalized similarity_score', async () => {
+      const rpcRows = [
+        { id: 'id-1', username: 'alice', public_key: 'GAAA1', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true, similarity_score: 0.87 },
+      ];
+      const client = {
+        from: jest.fn(),
+        rpc: jest.fn(() => makeChain({ data: rpcRows, error: null })),
+      };
+      const service = await createService(client as unknown as ReturnType<typeof makeClient>);
+
+      const result = await service.searchPublicUsernames('ali', 10);
+
+      expect(client.rpc).toHaveBeenCalledWith('search_usernames', { search_query: 'ali', result_limit: 10 });
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('id-1');
+      expect(result[0].similarity_score).toBe(0.87);
+    });
+
+    it('falls back to an ilike query when the search_usernames RPC errors', async () => {
+      const fallbackRows = [
+        { id: 'id-2', username: 'alicia', public_key: 'GAAA2', created_at: '2025-01-01T00:00:00.000Z', last_active_at: null, is_public: true },
+      ];
+      const fallbackChain = makeChain({ data: fallbackRows, error: null });
+      const client = {
+        from: jest.fn(() => fallbackChain),
+        rpc: jest.fn(() => makeChain({ data: null, error: { message: 'rpc unavailable' } })),
+      };
+      const service = await createService(client as unknown as ReturnType<typeof makeClient>);
+
+      const result = await service.searchPublicUsernames('ali', 10);
+
+      expect(client.rpc).toHaveBeenCalledWith('search_usernames', { search_query: 'ali', result_limit: 10 });
+      expect(client.from).toHaveBeenCalledWith('usernames');
+      expect(fallbackChain.ilike).toHaveBeenCalledWith('username', '%ali%');
+      expect(fallbackChain.eq).toHaveBeenCalledWith('is_public', true);
+      expect(fallbackChain.limit).toHaveBeenCalledWith(10);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('id-2');
+      // Fallback rows carry no similarity_score; it must be normalized to 0.
+      expect(result[0].similarity_score).toBe(0);
+    });
   });
 
   describe('getTrendingCreators', () => {
