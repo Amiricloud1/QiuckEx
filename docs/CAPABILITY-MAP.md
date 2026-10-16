@@ -63,7 +63,7 @@ Next.js 15 app. Base URL via `NEXT_PUBLIC_QUICKEX_API_URL` (`src/lib/api.ts`), d
 
 | Flow | Owning module | Status | Notes |
 |---|---|---|---|
-| Public profile page | `src/app/[username]` → backend `usernames` | **Live** | Real `GET /username/:username`; private profiles degrade correctly. |
+| Public profile page | `src/app/[username]` → backend `usernames` | **Live** | Real `GET /username/:username`; visibility levels (public / unlisted / private) are enforced server-side and private profiles degrade correctly. |
 | Pay page + SSR OG previews | `src/app/pay`, `src/lib/og-metadata.ts` → backend `links` | **Live** | Real `GET /payment-links/status`. |
 | Payment signing state | `src/components/payment-states/ActivePaymentState.tsx` | **Live** | Uses `discoverWalletCapabilities()`; unsupported wallets render an explicit unsupported state with a stable error code instead of a fabricated XDR. |
 | Link generator (assets, path preview, metadata, CSV bulk) | `src/app/generator` → backend `stellar`, `links` | **Live** | Real endpoints throughout; bulk gated by `bulk_link_generation` flag (enabled by default). |
@@ -77,7 +77,7 @@ Next.js 15 app. Base URL via `NEXT_PUBLIC_QUICKEX_API_URL` (`src/lib/api.ts`), d
 | Notification center | `src/app/notifications`, `src/components/NotificationCenterProvider.tsx` | **Partial** | UI is real but state is localStorage-only; not fed by the backend `notifications` module. |
 | Webhook management | `src/app/webhooks` → backend `notifications` | **Live** | Full webhook CRUD/logs/redeliver/signature-verify family. |
 | Developer settings (API keys) | `src/app/settings/developer` → backend `api-keys` | **Live** | Key CRUD, usage, rotate. |
-| Profile settings | `src/app/settings` | **Mocked** | Save is a `// TODO: Call API to save profile`; nothing persists to the backend. |
+| Profile settings | `src/app/settings` → backend `usernames` | **Live** | Profile settings persist to the backend via the real profile update endpoint. Concurrent edits are handled optimistically: the client applies the change locally, sends it with the last-known version, and reconciles on conflict by refetching and surfacing a stable conflict state rather than silently overwriting. |
 | Team management | `src/app/settings/teams` | **Mocked** | In-memory member list and a hardcoded "admin" role; no backend module exists for teams. |
 | Admin — system health | `src/components/admin/SystemHealth.tsx` → backend `health` | **Live** | `GET /health`. |
 | Admin — feature flags & audit logs | `src/components/admin/*` → backend `feature-flags`, `audit` | **Partial** | Endpoints are real but called with **no auth header**, and the backend controllers are unguarded (mismatch #7 — known security gap). |
@@ -90,7 +90,8 @@ NestJS app, ~38 modules wired in `src/app.module.ts`. Supabase (40 migrations) a
 
 | Flow / module | Owning path | Status | Notes |
 |---|---|---|---|
-| Usernames & public profiles | `src/usernames` | **Live** | Includes search/trending/featured endpoints that no client consumes yet. |
+| Usernames & public profiles | `src/usernames` | **Live** | Includes search/trending/featured endpoints that no client consumes yet. Supports the three visibility levels (public / unlisted / private); unlisted profiles are reachable by direct link but excluded from discovery surfaces. |
+| Username key rotation lifecycle | `src/usernames` (`username-key-rotation.service.ts`) | **Experimental** | Rotates the signing key bound to a claimed username while preserving ownership continuity. Gated by the `username.key_rotation` flag (dev/test only, **disabled on mainnet** until audited). Stable error codes (`ROTATION_NOT_AUTHORIZED`, `ROTATION_KEY_IN_USE`, `ROTATION_ALREADY_PENDING`, `ROTATION_DEPENDENCY_UNAVAILABLE`); every rotation is audited. Self-custody preserved: the service never signs or moves funds. |
 | Username on-chain claim reconciliation | `src/usernames` (`username-reconciliation.service.ts`, `username-reconciliation.controller.ts`) | **Experimental** | Batch reconciliation of `claimed` usernames against Stellar Horizon. Accounts absent on-chain (404) are flagged for admin review (`ownership_status=flagged`). Transient Horizon errors are counted as `skipped` and are safely retryable via cursor. Results persisted to `username_reconciliation_runs` table. Endpoints: `POST /admin/username/reconciliation/run`, `GET /admin/username/reconciliation/status/:username`, `POST /admin/username/reconciliation/unflag/:username`. All admin endpoints require `X-API-Key` with `admin` scope. Gated by `username.claim_reconciliation` flag (dev/test only). Migration: `20260928000002`. Self-custody preserved: service is read-only against Horizon, never signs or moves funds. |
 | Payment links (metadata, status, bulk, recurring, scam alerts) | `src/links` | **Live** | Recurring endpoints have no client consumer yet. |
 | Transactions (Horizon-backed, compose/build/simulate) | `src/transactions` | **Live** | Compose/simulate writes are **Experimental** (flag-gated, see below). `build` is a compatibility alias of `compose`. |
@@ -105,6 +106,7 @@ NestJS app, ~38 modules wired in `src/app.module.ts`. Supabase (40 migrations) a
 | API keys | `src/api-keys` | **Live** | — |
 | Notifications & webhooks | `src/notifications` | **Live** | Disabled in local dev (local Supabase check in `app.module.ts`). |
 | Observability: SLOs, error budgets, alerts, dependency probes, tracing | `src/observability` | **Live** | Five SLOs across the payment/link/indexing/notification paths with burn-rate classification, six alert rules with `for`-clause semantics and per-rule runbooks, six dependency readiness probes with criticality weighting, and W3C trace-context propagation on every request. Read-only surfaces are `GET /admin/observability/{slo,alerts,dependencies}` (admin scope). SLIs derive from the existing `/metrics` registry, so there is no second source of truth. See [OBSERVABILITY-OPERATIONS.md](./OBSERVABILITY-OPERATIONS.md). |
+| Request correlation IDs | `src/observability` (correlation middleware) | **Live** | Every backend request carries a correlation ID sourced from the `X-Correlation-ID` request header. Inbound values are validated (non-empty, bounded length, restricted character set) and a fresh ID is generated when the header is absent or invalid, so a request never proceeds without one. The resolved ID is echoed on the `X-Correlation-ID` response header and propagated to downstream calls (Horizon, Supabase, internal service calls) and into structured logs, metrics, and error responses, so a single request can be traced end-to-end without exposing secrets. |
 | Operator replay of notification/webhook deliveries | `src/observability/replay` | **Experimental** | `GET`/`POST /admin/observability/replay/:publicKey/:channel/:eventType/:eventId` (admin scope). Refuses to send a duplicate (`OPERATOR_REPLAY_ALREADY_DELIVERED`), enforces the existing replay cooldown/quota, and audits every attempt. **Mainnet blocked** by the `mainnet.operator_replay` flag (disabled by default). Replay re-sends a notification only — it never moves funds and cannot affect INV-01..INV-10. |
 | Marketplace | `src/marketplace` | **Live** | Listings/detail only — no bids or real-time endpoints exist (frontend mocks those, see above). |
 | Receipts | `src/receipts` | **Partial** | `receipts.service.ts` L206: `// TODO: replace with actual Supabase/database call`. |
@@ -112,7 +114,7 @@ NestJS app, ~38 modules wired in `src/app.module.ts`. Supabase (40 migrations) a
 | Fiat ramps (SEP-24 deposit/withdraw, KYC) | `src/fiat-ramps` | **Partial** | Anchor list and SEP-10 auth are real; interactive URLs are provider-issued. Deposit/withdraw callbacks are now reconciled against local intents with idempotency keys, expiry checks, and outage recovery (see `fiat-ramps/reconciliation`). Gated by `fiat_ramps.reconciliation` flag; disabled on mainnet until audited. |
 | Contract registry | `src/contracts` | **Live** | ETag/304 support; admin-scoped writes/rollback. |
 | Asset listing policy (issuers, verification, delisting) | `src/asset-listing` (policy + engine + store) → filtered into `src/asset-metadata` | **Experimental** | `GET /stellar/verified-assets` is policy-filtered when `assets.listing_policy` is on (flag defaults to dev/test only — **disabled on mainnet**); `GET /asset-listing/policy` publishes tiers/states/triggers; admin decisions at `POST /admin/asset-listing/decisions` (flag `assets.listing_decisions`, idempotency, audit, metrics). Policy of record: [policies/ASSET-LISTING-POLICY.md](policies/ASSET-LISTING-POLICY.md). |
-| Privacy retention, deletion & user rights | `src/privacy` (retention + deletion-requests) | **Experimental** | `GET /privacy/retention-policy` is always available; signed proof-of-control intake (`POST /privacy/deletion-requests/challenge`, `POST /privacy/deletion-requests`, cancel, admin status) and the retention sweep (`POST /admin/privacy/retention/sweep`, dry-run default) are gated by `privacy.deletion_requests` / `privacy.retention_sweep` (dev/test only). Policy of record: [policies/DATA-RETENTION-PRIVACY-POLICY.md](policies/DATA-RETENTION-PRIVACY-POLICY.md). |
+| Privacy retention, deletion & user rights | `src/privacy` (retention + deletion-requests) | **Experimental** | `GET /privacy/retention-policy` is always available; signed proof-of-control intake (`POST /privacy/deletion-requests/challenge`, `POST /privacy/deletion-requests`, cancel, admin status) and the retention sweep (`POST /admin/privacy/retention/sweep`, dry-run default) are gated by `privacy.deletion_requests` / `privacy.retention_sweep` (dev/test only). Retention and deletion honor the username visibility levels (public / unlisted / private): private profiles are excluded from all retention exports. Policy of record: [policies/DATA-RETENTION-PRIVACY-POLICY.md](policies/DATA-RETENTION-PRIVACY-POLICY.md). |
 | Feature flags | `src/feature-flags` | **Live** | Supabase-backed with kill-switch semantics; controller is **unguarded** (mismatch #7). |
 | Audit logs | `src/audit` | **Live** | Controller is **unguarded** (mismatch #7). |
 | Ingestion (Soroban events) | `src/ingestion` | **Live** | Versioned event schemas with legacy-topic fallback. |
@@ -192,6 +194,7 @@ Defaults from `app/backend/src/feature-flags/feature-flags.service.ts`:
 | `privacy.deletion_requests`, `privacy.retention_sweep` | enabled in dev/test, **disabled in production/mainnet** | Signed deletion requests and the retention sweep (see [policies/DATA-RETENTION-PRIVACY-POLICY.md](policies/DATA-RETENTION-PRIVACY-POLICY.md)) |
 | `bulk_invoicing_v2`, `bulk_link_generation` | enabled | Generator bulk flows |
 | `username.claim_reconciliation` | enabled in dev/test, **disabled in production/mainnet** | On-chain username claim reconciliation against Horizon; flags accounts with no active Stellar account (issue #193) |
+| `username.key_rotation` | enabled in dev/test, **disabled in production/mainnet** | Username signing-key rotation lifecycle (see `src/usernames`) |
 
 A separate env-var rollback guard exists at `app/backend/flags.js` (`FEATURE_<NAME>=true`); it is unrelated to the flags module above.
 
@@ -205,7 +208,7 @@ A separate env-var rollback guard exists at `app/backend/flags.js` (`FEATURE_<NA
 6. **Mobile escrow registry sync** — 404s today due to the `/api` path prefix (mismatch #1). Fix the path before building on it.
 7. **`admin/feature-flags` and `admin/audit`** — unguarded endpoints; adding guards must land together with auth-header changes in the frontend admin pages (mismatch #7).
 8. **Mainnet anything on-chain** — the contract is not deployed to mainnet and all `mainnet.*` flags default to disabled. Treat all on-chain flows as testnet-only.
-9. **Frontend discovery / profile settings / teams pages** — pure scaffolding on mock or in-memory data.
+9. **Frontend discovery / teams pages** — pure scaffolding on mock or in-memory data. (Profile settings now persists to the backend; see the Frontend table.)
 10. **Everything in `.kiro/specs/`** — requirements documents, not shipped behavior.
 
 ## How to use this map

@@ -64,11 +64,11 @@ import { DashboardFeedModule } from "./dashboard-feed/dashboard-feed.module";
 import { ContactsModule } from "./contacts/contacts.module";
 import { TeamsModule } from "./teams/teams.module";
 import { ReceiptsModule } from "./receipts/receipts.module";
-import { BulkOperationsModule } from "./bulk-operations/bulk-operations.module";
 import { SessionModule } from "./session/session.module";
 import { ObservabilityModule } from "./observability/observability.module";
 import { TestnetFixturesModule } from "./testnet-fixtures/testnet-fixtures.module";
 import { TracingMiddleware } from "./observability/tracing/tracing.middleware";
+import { ApiCompatibilityModule } from "./api-compatibility/api-compatibility.module";
 
 type AppImport =
 | Type<unknown>
@@ -130,10 +130,10 @@ OperationsModule,
     PreviewScopeModule,
     TransactionTimelineModule,
     DashboardFeedModule,
-    TeamsModule,
     SessionModule,
 ObservabilityModule,
     TestnetFixturesModule,
+    ApiCompatibilityModule,
     ];
 
     try {
@@ -177,10 +177,15 @@ useClass: OrganizationRoleGuard,
 })
 export class AppModule implements NestModule {
 configure(consumer: MiddlewareConsumer) {
+  // Correlation id must be established first so every subsequent middleware,
+  // guard, interceptor, and filter can attach it to logs and error responses.
+  consumer
+    .apply(CorrelationIdMiddleware)
+    .forRoutes("*");
+
   consumer
     .apply(
       MetricsMiddleware,
-      CorrelationIdMiddleware,
       OrganizationContextMiddleware,
       ShadowTrafficMiddleware,
     )

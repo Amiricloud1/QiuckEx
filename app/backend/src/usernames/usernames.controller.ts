@@ -6,10 +6,12 @@ import {
   Patch,
   Query,
   Param,
+  Headers,
   ConflictException,
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import {
@@ -37,6 +39,9 @@ import {
   FeaturedUsernamesResponseDto,
   PublicProfileDto,
   ProfileSettingsDto,
+  UpdateVisibilityDto,
+  AnnounceKeyRotationDto,
+  RevokeKeyRotationDto,
 } from "../dto";
 import { UsernamesService } from "./usernames.service";
 import {
@@ -45,6 +50,9 @@ import {
   UsernameValidationError,
   UsernameErrorCode,
   UsernameClaimInvalidError,
+  KeyRotationDisabledError,
+  KeyRotationNotFoundError,
+  KeyRotationConflictError,
 } from "./errors";
 
 @ApiTags("usernames")
@@ -213,10 +221,40 @@ export class UsernamesController {
   @ApiOperation({ summary: "Save validated profile settings with conflict detection" })
   @ApiBody({ type: ProfileSettingsDto })
   @ApiResponse({ status: 200, description: "Profile settings saved" })
+  @ApiResponse({ status: 400, description: "Profile payload failed validation" })
   @ApiResponse({ status: 403, description: "Profile is not owned by this wallet" })
   @ApiResponse({ status: 409, description: "Profile changed since it was loaded" })
-  async updateProfileSettings(@Body() body: ProfileSettingsDto) {
-    const result = await this.usernamesService.updateProfileSettings(body);
+  @ApiResponse({ status: 503, description: "A required dependency is unavailable" })
+  async updateProfileSettings(
+    @Body() body: ProfileSettingsDto,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    let result: Awaited<ReturnType<UsernamesService["updateProfileSettings"]>>;
+    try {
+      result = await this.usernamesService.updateProfileSettings(
+        body,
+        idempotencyKey,
+      );
+    } catch (err) {
+      if (err instanceof UsernameValidationError) {
+        throw new BadRequestException({
+          code: "PROFILE_MALFORMED",
+          message: err.message,
+          field: err.field,
+        });
+      }
+      if (err instanceof UsernameConflictError) {
+        throw new ConflictException({
+          code: "PROFILE_CONFLICT",
+          message: err.message,
+        });
+      }
+      throw new ServiceUnavailableException({
+        code: "PROFILE_DEPENDENCY_FAILURE",
+        message: "Profile settings could not be saved due to a dependency failure",
+      });
+    }
+
     if (result.status === "not_found") {
       throw new ForbiddenException({
         code: "PROFILE_NOT_OWNED",
@@ -227,6 +265,18 @@ export class UsernamesController {
       throw new ConflictException({
         code: "PROFILE_CONFLICT",
         message: "Profile changed since it was loaded",
+      });
+    }
+    if (result.status === "malformed") {
+      throw new BadRequestException({
+        code: "PROFILE_MALFORMED",
+        message: "Profile payload failed validation",
+      });
+    }
+    if (result.status === "dependency_failure") {
+      throw new ServiceUnavailableException({
+        code: "PROFILE_DEPENDENCY_FAILURE",
+        message: "Profile settings could not be saved due to a dependency failure",
       });
     }
     return { profile: result.profile };
@@ -260,6 +310,14 @@ export class UsernamesController {
   @ApiResponse({
     status: 400,
     description: "Invalid search query",
+  })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Search service temporarily unavailable",
   })
   async searchUsernames(
     @Query() query: SearchUsernamesQueryDto,
@@ -320,6 +378,14 @@ export class UsernamesController {
     status: 400,
     description: "Invalid time window parameter",
   })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Trending service temporarily unavailable",
+  })
   async getTrendingCreators(
     @Query() query: TrendingCreatorsQueryDto,
   ): Promise<TrendingCreatorsResponseDto> {
@@ -377,6 +443,14 @@ export class UsernamesController {
     status: 400,
     description: "Invalid time window parameter",
   })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Recently active service temporarily unavailable",
+  })
   async getRecentlyActive(
     @Query() query: RecentlyActiveQueryDto,
   ): Promise<RecentlyActiveResponseDto> {
@@ -424,6 +498,14 @@ export class UsernamesController {
     status: 200,
     description: "List of featured creator profiles sorted by featured rank",
     type: FeaturedUsernamesResponseDto,
+  })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Featured service temporarily unavailable",
   })
   async getFeaturedCreators(
     @Query() query: FeaturedUsernamesQueryDto,
@@ -508,6 +590,9 @@ export class UsernamesController {
     }
   }
 
+  // NOTE: This catch-all route MUST remain the last @Get route declared in this
+  // controller. The discovery routes above (search, trending, recently-active,
+  // featured) would otherwise be shadowed by ":username".
   @Get(":username")
   @ApiOperation({
     summary: "Get profile by username",
@@ -522,6 +607,14 @@ export class UsernamesController {
     status: 404,
     description: "Username not found",
   })
+  @ApiResponse({
+    status: 429,
+    description: "Rate limit exceeded – retry after 60 seconds",
+  })
+  @ApiResponse({
+    status: 503,
+    description: "Profile service temporarily unavailable",
+  })
   async getProfile(
     @Param("username") username: string,
   ) {
@@ -531,6 +624,7 @@ export class UsernamesController {
         return {
           username: profile.username,
           isPublic: false,
+          visibility: profile.visibility,
         };
       }
       return {
@@ -538,6 +632,7 @@ export class UsernamesController {
         username: profile.username,
         publicKey: profile.public_key,
         isPublic: true,
+        visibility: profile.visibility,
         lastActiveAt: profile.last_active_at || profile.created_at,
         createdAt: profile.created_at,
       };

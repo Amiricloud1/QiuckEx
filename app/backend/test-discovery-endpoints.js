@@ -3,6 +3,26 @@ const axios = require('axios');
 
 const BASE_URL = 'http://localhost:3000';
 
+function assertDiscoveryShape(data) {
+  const errors = [];
+  if (!data || typeof data !== 'object') {
+    return ['response is not an object'];
+  }
+  if (!Array.isArray(data.results)) {
+    errors.push('results is not an array');
+  }
+  if (!Array.isArray(data.profiles)) {
+    errors.push('profiles is not an array');
+  }
+  if (!('next_cursor' in data)) {
+    errors.push('next_cursor is missing');
+  }
+  if (typeof data.has_more !== 'boolean') {
+    errors.push('has_more is not a boolean');
+  }
+  return errors;
+}
+
 async function testEndpoint(endpoint, description) {
   try {
     console.log(`\n🧪 Testing: ${description}`);
@@ -17,6 +37,13 @@ async function testEndpoint(endpoint, description) {
     
     console.log(`✅ Success: ${response.status}`);
     console.log(`📊 Response:`, JSON.stringify(response.data, null, 2));
+
+    const shapeErrors = assertDiscoveryShape(response.data);
+    if (shapeErrors.length > 0) {
+      console.log(`❌ Response shape invalid: ${shapeErrors.join(', ')}`);
+      return false;
+    }
+    console.log('✅ Response shape valid (results/profiles/next_cursor/has_more)');
     return true;
   } catch (error) {
     console.log(`❌ Error: ${error.message}`);
@@ -44,6 +71,10 @@ async function runTests() {
     {
       endpoint: '/username/recently-active?timeWindowHours=24&limit=5',
       description: 'Recently active users endpoint'
+    },
+    {
+      endpoint: '/username/featured?limit=5',
+      description: 'Featured creators endpoint'
     },
     {
       endpoint: '/username/search?query=al&limit=3',

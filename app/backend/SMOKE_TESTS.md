@@ -13,6 +13,63 @@ Smoke tests provide rapid validation of:
 - **Performance benchmarks** (response time thresholds)
 - **Error handling** (proper error responses and status codes)
 
+## Automated Smoke Test Script
+
+In addition to the Jest-based suites below, this directory includes a standalone automated smoke test script that validates a deployed environment end-to-end and reports failures to a webhook.
+
+### Purpose
+
+The script provides a fast, dependency-light validation of a live deployment. It checks that the API is reachable, that authentication works, and that the critical read endpoints respond correctly. It is intended to be run immediately after a deployment and can be wired into CI to gate promotion.
+
+### Required Environment Variables
+
+| Variable | Description |
+| --- | --- |
+| `SMOKE_TEST_BASE_URL` | Base URL of the target API (e.g. `https://api.quickex.io`). |
+| `SMOKE_TEST_USERNAME` | Username used for username-related checks. Must be the reserved test account (see below). |
+| `SMOKE_TEST_WEBHOOK_URL` | Webhook endpoint that receives failure notifications. |
+| `SMOKE_TEST_TIMEOUT_MS` | Per-request timeout in milliseconds. |
+
+### Reserved Test Account
+
+Username checks must use the reserved test account. Do not point `SMOKE_TEST_USERNAME` at a real user, as the script may create or mutate data associated with that account. The reserved account is provisioned in each environment and is safe to use for repeated runs.
+
+### Endpoints Validated
+
+- Health and readiness endpoints
+- Authentication endpoint (to obtain a token for authenticated checks)
+- Username lookup for the reserved test account
+- Link metadata endpoint
+- Asset metadata endpoint
+
+### Running Locally
+
+```bash
+SMOKE_TEST_BASE_URL=https://api-staging.quickex.io \
+SMOKE_TEST_USERNAME=smoke-test-user \
+SMOKE_TEST_WEBHOOK_URL=https://hooks.example.com/smoke \
+SMOKE_TEST_TIMEOUT_MS=10000 \
+npm run test:smoke:script
+```
+
+### Running in CI
+
+The script runs as a step in the smoke test workflow after the deployment is confirmed healthy. The workflow injects the environment variables from repository/environment configuration and invokes the same npm script. A non-zero exit code fails the job and blocks promotion.
+
+### Exit-Code Semantics
+
+- `0` — All checks passed.
+- `1` — One or more checks failed (the failure details are sent to `SMOKE_TEST_WEBHOOK_URL`).
+- `2` — Configuration error (a required environment variable is missing or invalid).
+
+### Failure Notification
+
+On failure, the script POSTs a JSON payload to `SMOKE_TEST_WEBHOOK_URL` containing the target environment, the list of failed checks, and the captured error messages. Notification failures are logged but do not change the script's exit code.
+
+### Automated Script vs. Jest Smoke Suites
+
+The automated script is a lightweight, single-process check focused on deployment reachability and core endpoints. The Jest-based suites (`smoke.e2e-spec.ts` and `smoke-soroban-horizon.e2e-spec.ts`) are broader, run under the test runner, and cover infrastructure, performance benchmarks, and error-handling scenarios in depth. Use the script for fast post-deploy gating and the Jest suites for comprehensive validation.
+
 ## Test Files
 
 ### `smoke.e2e-spec.ts`

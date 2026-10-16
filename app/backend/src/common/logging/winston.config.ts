@@ -1,5 +1,8 @@
 import * as winston from 'winston';
-import { getCurrentCorrelationId } from '../context/correlation.context';
+import {
+  getCurrentCorrelationId,
+  getCurrentTraceId,
+} from '../context/correlation.context';
 
 /**
  * Structured logging format for Winston.
@@ -10,6 +13,7 @@ import { getCurrentCorrelationId } from '../context/correlation.context';
  *   - message
  *   - service name
  *   - correlationId (when a request scope is active)
+ *   - traceId (when a request scope is active)
  *   - any additional metadata
  *
  * File transports use JSON format for machine parsing.
@@ -18,6 +22,8 @@ import { getCurrentCorrelationId } from '../context/correlation.context';
 const withCorrelationId = winston.format((info) => {
   const correlationId = getCurrentCorrelationId();
   if (correlationId) info.correlationId = correlationId;
+  const traceId = getCurrentTraceId();
+  if (traceId) info.traceId = traceId;
   return info;
 });
 
@@ -29,15 +35,20 @@ const structuredFormat = winston.format.combine(
 );
 
 const consoleFormat = winston.format.combine(
+  withCorrelationId(),
   winston.format.timestamp({ format: 'HH:mm:ss.SSS' }),
   winston.format.colorize(),
-  winston.format.printf(({ timestamp, level, message, context, ...meta }) => {
-    const ctx = context ? `[${context}]` : '';
-    const extra = Object.keys(meta).length
-      ? ` ${JSON.stringify(meta)}`
-      : '';
-    return `${timestamp} ${level} ${ctx} ${message}${extra}`;
-  }),
+  winston.format.printf(
+    ({ timestamp, level, message, context, correlationId, traceId, ...meta }) => {
+      const ctx = context ? `[${context}]` : '';
+      const ids = [correlationId, traceId].filter(Boolean).join('/');
+      const idTag = ids ? `[${ids}]` : '';
+      const extra = Object.keys(meta).length
+        ? ` ${JSON.stringify(meta)}`
+        : '';
+      return `${timestamp} ${level} ${ctx}${idTag} ${message}${extra}`;
+    },
+  ),
 );
 
 export const winstonConfig = {

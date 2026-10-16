@@ -17,6 +17,10 @@ inputs:
   app_url:
     description: Base URL of the deployed app (for health check)
     required: true
+  preview_scope:
+    description: Optional per-PR namespace for preview deployments (e.g. pr-123)
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -35,15 +39,23 @@ runs:
           -d '{
             "image": "${{ inputs.image_tag }}",
             "sha": "${{ inputs.git_sha }}",
-            "environment": "${{ inputs.environment }}"
+            "environment": "${{ inputs.environment }}",
+            "preview_scope": "${{ inputs.preview_scope }}"
           }' || true   # remove `|| true` once real endpoint is wired up
 
     - name: Wait for health check
       shell: bash
+      env:
+        PREVIEW_SCOPE: ${{ inputs.preview_scope }}
       run: |
-        echo "Waiting for ${{ inputs.app_url }}/health ..."
+        if [ -n "${PREVIEW_SCOPE}" ]; then
+          HEALTH_URL="${{ inputs.app_url }}/${PREVIEW_SCOPE}/health"
+        else
+          HEALTH_URL="${{ inputs.app_url }}/health"
+        fi
+        echo "Waiting for ${HEALTH_URL} ..."
         for i in $(seq 1 24); do
-          STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${{ inputs.app_url }}/health" || echo "000")
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${HEALTH_URL}" || echo "000")
           if [ "$STATUS" = "200" ]; then
             echo "Health check passed (attempt ${i})"
             exit 0
@@ -57,4 +69,4 @@ runs:
     - name: Log release metadata
       shell: bash
       run: |
-        echo "::notice title=Release [${{ inputs.environment }}]::image=${{ inputs.image_tag }} | sha=${{ inputs.git_sha }} | env=${{ inputs.environment }} | ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "::notice title=Release [${{ inputs.environment }}]::image=${{ inputs.image_tag }} | sha=${{ inputs.git_sha }} | env=${{ inputs.environment }} | preview_scope=${{ inputs.preview_scope }} | ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

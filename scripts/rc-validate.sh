@@ -72,6 +72,7 @@ FULL_STAGES=(
   "type-check|pnpm|0|tsc --noEmit clean across the workspace"
   "build|pnpm|0|All packages build"
   "test|pnpm|0|Backend unit and integration suites pass coverage thresholds"
+  "invariants|pnpm|0|Rust and Jest invariant test suites pass"
   "fuzz|pnpm|1|Property-based suites (fast-check)"
   "contract|cargo|1|cargo fmt + clippy + test in app/contract"
   "openapi|pnpm|0|Committed openapi.json matches the code"
@@ -251,6 +252,23 @@ for stage in "${STAGES[@]}"; do
         fi
       else
         detail="FAILED: unit suite (see /tmp/rc-test-unit.log)"
+      fi
+      ;;
+
+    invariants)
+      # Required RC gate: the Rust and Jest invariant suites must both pass.
+      # These encode the protocol invariants a release candidate is expected to
+      # uphold, so a failure here blocks the candidate outright.
+      if ( cd app/contract \
+           && cargo test --test invariants >/tmp/rc-invariants-rust.log 2>&1 ); then
+        if NODE_ENV=test STELLAR_NETWORK=testnet \
+           pnpm --filter @quickex/backend test:invariants >/tmp/rc-invariants-jest.log 2>&1; then
+          ok=1; detail="Rust + Jest invariant suites pass"
+        else
+          detail="FAILED: Jest invariant suite (see /tmp/rc-invariants-jest.log)"
+        fi
+      else
+        detail="FAILED: Rust invariant suite (see /tmp/rc-invariants-rust.log)"
       fi
       ;;
 

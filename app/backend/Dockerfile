@@ -23,6 +23,13 @@ RUN pnpm install --frozen-lockfile --prod
 
 COPY --from=builder /app/dist ./dist
 
+RUN addgroup -S nodejs && adduser -S nestjs -G nodejs \
+    && chown -R nestjs:nodejs /app
+
+USER nestjs
+
 EXPOSE 4000
+
+HEALTHCHECK CMD wget -qO- http://localhost:4000/health || exit 1
 
 CMD ["node", "dist/main"]

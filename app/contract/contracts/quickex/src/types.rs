@@ -449,3 +449,40 @@ pub struct DisputeEvidence {
     /// Timestamp when evidence was submitted.
     pub submitted_at: u64,
 }
+
+/// Lifecycle status of a privacy key rotation.
+///
+/// Tracks the state of a key rotation request from initiation through
+/// completion or cancellation.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyRotationStatus {
+    /// Rotation has been requested but not yet finalized.
+    Pending,
+    /// Rotation completed and the new key is active.
+    Completed,
+    /// Rotation was canceled before completion.
+    Canceled,
+}
+
+/// Persisted record of a privacy key rotation.
+///
+/// Stored by the privacy module so rotation state can be queried and audited
+/// on-chain. The record binds the owner, the previous and new key material,
+/// and the timestamps at which the rotation was requested and finalized.
+#[contracttype]
+#[derive(Clone)]
+pub struct KeyRotationRecord {
+    /// Owner whose privacy key is being rotated.
+    pub owner: Address,
+    /// Previous public key (32 bytes) being replaced.
+    pub old_key: BytesN<32>,
+    /// New public key (32 bytes) that becomes active on completion.
+    pub new_key: BytesN<32>,
+    /// Current status of the rotation.
+    pub status: KeyRotationStatus,
+    /// Ledger timestamp when the rotation was requested.
+    pub requested_at: u64,
+    /// Ledger timestamp when the rotation was completed; `0` while pending.
+    pub completed_at: u64,
+}
