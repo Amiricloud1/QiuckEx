@@ -266,6 +266,53 @@ curl http://localhost:4000/ready
 
 Open `http://localhost:4000/docs` in your browser.
 
+## Container Image
+
+The backend is published as a Docker image to the GitHub Container Registry (GHCR).
+
+### Image name
+
+```
+ghcr.io/viky207/quickex-backend
+```
+
+### Tagging scheme
+
+| Tag | Description |
+| --- | --- |
+| `<commit-sha>` | Immutable tag for each build, matching the Git commit SHA |
+| `latest` | Most recent build from the default branch |
+
+### Required repository secret
+
+Publishing the image requires a `GHCR_TOKEN` repository secret:
+
+- A Personal Access Token (PAT) with the `write:packages` scope, **or**
+- `GITHUB_TOKEN` if the workflow's `permissions` are configured with `packages: write`
+
+### Pull and run locally
+
+```bash
+docker pull ghcr.io/viky207/quickex-backend:latest
+
+docker run -p 4000:4000 --env-file .env ghcr.io/viky207/quickex-backend:latest
+```
+
+The container listens on port `4000` by default. Provide the required environment variables via `--env-file .env` (see [Environment Variables](#environment-variables)).
+
+### Healthcheck
+
+The image exposes a healthcheck endpoint at `/health`:
+
+```bash
+curl http://localhost:4000/health
+```
+
+### Build notes
+
+- **Multi-stage build**: The image is built in multiple stages (dependency install, build, and a slim runtime stage) to keep the final image small.
+- **Non-root user**: The container runs as a non-root user for improved security.
+
 ## Architecture
 
 ```
