@@ -44,6 +44,41 @@ export interface JobFilters {
 }
 
 /**
+ * Terminal job statuses eligible for retention cleanup.
+ * Active statuses (pending, running) are never deleted.
+ */
+export const TERMINAL_JOB_STATUSES: readonly JobStatus[] = [
+  JobStatus.COMPLETED,
+  JobStatus.FAILED,
+  JobStatus.CANCELLED,
+];
+
+/**
+ * Safe, redacted projection of a job for operator triage.
+ * Deliberately excludes payload and any credential material.
+ */
+export interface JobStatusProjection {
+  id: string;
+  type: JobType;
+  status: JobStatus;
+  attempts: number;
+  maxAttempts: number;
+  createdAt: Date;
+  scheduledAt: Date;
+  completedAt: Date | null;
+  failureReason: string | null;
+  correlationId: string | null;
+}
+
+/**
+ * Result of a retention cleanup run.
+ */
+export interface RetentionCleanupResult {
+  deleted: number;
+  batches: number;
+}
+
+/**
  * Paginated job results
  */
 export interface PaginatedJobs {
@@ -329,6 +364,154 @@ export class JobRepository {
     }
 
     return count;
+  }
+
+  /**
+   * Delete terminal jobs older than the given cutoff, in bounded batches.
+   *
+   * Only terminal statuses (completed, failed, cancelled) whose `completed_at`
+   * is strictly older than `cutoff` are eligible. Active jobs (pending,
+   * running) and audit-required records (`audit_required = true`) are always
+   * preserved. The operation is idempotent: re-running after a successful pass
+   * deletes nothing further.
+   *
+   * @param cutoff - Jobs completed before this instant are eligible
+   * @param batchSize - Maximum rows deleted per batch (bounded)
+   * @returns Count of deleted rows and number of batches executed
+   */
+  async deleteTerminalJobsOlderThan(
+    cutoff: Date,
+    batchSize: number = 500,
+  ): Promise<RetentionCleanupResult> {
+    if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
+      throw new Error('deleteTerminalJobsOlderThan requires a valid cutoff Date');
+    }
+    if (!Number.isInteger(batchSize) || batchSize <= 0) {
+      throw new Error('batchSize must be a positive integer');
+    }
+
+    const cutoffIso = cutoff.toISOString();
+    let deleted = 0;
+    let batches = 0;
+
+    // Loop until a batch returns fewer rows than requested (no more eligible).
+    // Each iteration is bounded by batchSize, keeping memory and lock time low.
+    for (;;) {
+      const { data, error } = await this.client
+        .from('jobs')
+        .select('id')
+        .in('status', TERMINAL_JOB_STATUSES as string[])
+        .lt('completed_at', cutoffIso)
+        .or('audit_required.is.null,audit_required.eq.false')
+        .order('completed_at', { ascending: true })
+        .limit(batchSize);
+
+      if (error) {
+        this.logger.error(
+          `Failed to select terminal jobs for retention: ${error.message}`,
+          error,
+        );
+        throw error;
+      }
+
+      const ids = (data as Array<{ id: string }> | null)?.map(r => r.id) ?? [];
+      if (ids.length === 0) {
+        break;
+      }
+
+      const { error: deleteError } = await this.client
+        .from('jobs')
+        .delete()
+        .in('id', ids)
+        .in('status', TERMINAL_JOB_STATUSES as string[])
+        .lt('completed_at', cutoffIso)
+        .or('audit_required.is.null,audit_required.eq.false');
+
+      if (deleteError) {
+        this.logger.error(
+          `Failed to delete terminal jobs for retention: ${deleteError.message}`,
+          deleteError,
+        );
+        throw deleteError;
+      }
+
+      deleted += ids.length;
+      batches += 1;
+
+      if (ids.length < batchSize) {
+        break;
+      }
+    }
+
+    if (deleted > 0) {
+      this.logger.log(
+        `Retention cleanup removed ${deleted} terminal jobs in ${batches} batch(es) (cutoff: ${cutoffIso})`,
+      );
+    }
+
+    return { deleted, batches };
+  }
+
+  /**
+   * Fetch a safe, redacted status projection for operator triage.
+   *
+   * Returns attempts, next retry (scheduled_at), stable failure reason,
+   * status, type, timestamps and correlation id. Payload and credentials are
+   * never selected.
+   *
+   * @param jobId - Job ID
+   * @returns Projection, or null if not found
+   */
+  async findJobStatusProjection(jobId: string): Promise<JobStatusProjection | null> {
+    const { data, error } = await this.client
+      .from('jobs')
+      .select(
+        'id, type, status, attempts, max_attempts, created_at, scheduled_at, completed_at, failure_reason, correlation_id',
+      )
+      .eq('id', jobId)
+      .maybeSingle();
+
+    if (error?.code === 'PGRST116') {
+      return null;
+    }
+
+    if (error) {
+      this.logger.error(
+        `Failed to load job status projection ${jobId}: ${error.message}`,
+        error,
+      );
+      throw error;
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    const row = data as {
+      id: string;
+      type: string;
+      status: string;
+      attempts: number;
+      max_attempts: number;
+      created_at: string;
+      scheduled_at: string;
+      completed_at: string | null;
+      failure_reason: string | null;
+      correlation_id: string | null;
+    };
+
+    return {
+      id: row.id,
+      type: row.type as JobType,
+      status: row.status as JobStatus,
+      attempts: row.attempts,
+      maxAttempts: row.max_attempts,
+      createdAt: new Date(row.created_at),
+      scheduledAt: new Date(row.scheduled_at),
+      completedAt: row.completed_at ? new Date(row.completed_at) : null,
+      failureReason: row.failure_reason,
+      correlationId: row.correlation_id ?? null,
+    };
   }
 
   /**
