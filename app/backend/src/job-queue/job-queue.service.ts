@@ -8,11 +8,51 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { JobRepository, JobFilters, PaginatedJobs } from './job.repository';
 import { JobRegistry } from './job-registry.service';
 import { CancellationStore } from './cancellation-token';
 import { JobQueueMetricsService } from './job-queue-metrics.service';
+import { AuditService } from '../audit/audit.service';
 import { Job, JobType, JobStatus } from './types';
+
+/**
+ * Options for idempotent enqueue requests.
+ *
+ * A scoped idempotency key identifies a single logical operation. The scope
+ * (operation + resource) plus the parameters hash are used to decide whether a
+ * repeated request may reuse an existing active run.
+ */
+export interface IdempotentEnqueueOptions {
+  /** Scoped idempotency key, e.g. `reconcile:account:123` */
+  idempotencyKey: string;
+  /** Logical operation name, e.g. `reconcile` */
+  operation: string;
+  /** Resource identifier the operation acts on, e.g. account id */
+  resource: string;
+}
+
+/**
+ * Outcome of an idempotent enqueue request.
+ */
+export interface IdempotentEnqueueResult {
+  /** The job id (existing when reused, new when created) */
+  jobId: string;
+  /** Whether an existing active run was reused */
+  reused: boolean;
+}
+
+/**
+ * Error thrown when an idempotency key is reused with different parameters.
+ */
+export class IdempotencyConflictError extends Error {
+  constructor(idempotencyKey: string) {
+    super(
+      `Idempotency key '${idempotencyKey}' was already used with different parameters`,
+    );
+    this.name = 'IdempotencyConflictError';
+  }
+}
 
 /**
  * Error thrown when attempting to enqueue a job with an unregistered type
@@ -56,7 +96,146 @@ export class JobQueueService {
     private readonly registry: JobRegistry,
     private readonly cancellationStore: CancellationStore,
     private readonly metrics: JobQueueMetricsService,
+    private readonly auditService: AuditService,
   ) {}
+
+  /**
+   * Enqueue a job idempotently.
+   *
+   * Repeated operator requests (e.g. after a timeout) with the same scoped
+   * idempotency key and identical parameters return the existing active run
+   * instead of starting duplicate work. Reusing a key with different
+   * parameters raises an IdempotencyConflictError rather than silently
+   * conflating the requests. Every dedupe decision is recorded via the
+   * AuditService.
+   *
+   * @param type - Job type (must be registered)
+   * @param payload - Job-specific payload data
+   * @param options - Scoped idempotency options
+   * @param scheduledAt - When the job should execute (defaults to now)
+   * @returns The job id and whether an existing run was reused
+   */
+  async enqueueIdempotent<TPayload = unknown>(
+    type: JobType,
+    payload: TPayload,
+    options: IdempotentEnqueueOptions,
+    scheduledAt: Date = new Date(),
+  ): Promise<IdempotentEnqueueResult> {
+    const { idempotencyKey, operation, resource } = options;
+    const parametersHash = this.hashParameters(type, payload);
+
+    const existing = await this.repository.findByIdempotencyKey(idempotencyKey);
+
+    if (existing) {
+      const existingHash = this.hashParameters(existing.type, existing.payload);
+
+      if (existingHash !== parametersHash) {
+        await this.recordDedupeDecision('conflict', {
+          idempotencyKey,
+          operation,
+          resource,
+          parametersHash,
+          existingJobId: existing.id,
+          existingParametersHash: existingHash,
+        });
+        throw new IdempotencyConflictError(idempotencyKey);
+      }
+
+      if (this.isActive(existing.status)) {
+        await this.recordDedupeDecision('reused', {
+          idempotencyKey,
+          operation,
+          resource,
+          parametersHash,
+          existingJobId: existing.id,
+        });
+        this.logger.log({
+          message: 'Idempotent enqueue reused existing run',
+          jobId: existing.id,
+          type,
+          idempotencyKey,
+        });
+        return { jobId: existing.id, reused: true };
+      }
+
+      // Terminal run: the previous attempt finished, so a new run is allowed.
+      await this.recordDedupeDecision('created-after-terminal', {
+        idempotencyKey,
+        operation,
+        resource,
+        parametersHash,
+        previousJobId: existing.id,
+        previousStatus: existing.status,
+      });
+    }
+
+    const jobId = await this.enqueueDelayed(
+      type,
+      payload,
+      scheduledAt,
+      idempotencyKey,
+    );
+
+    await this.recordDedupeDecision('created', {
+      idempotencyKey,
+      operation,
+      resource,
+      parametersHash,
+      jobId,
+    });
+
+    return { jobId, reused: false };
+  }
+
+  private isActive(status: JobStatus): boolean {
+    return status === JobStatus.PENDING || status === JobStatus.RUNNING;
+  }
+
+  private hashParameters(type: JobType, payload: unknown): string {
+    const serialized = this.stableStringify({ type, payload });
+    return createHash('sha256').update(serialized).digest('hex');
+  }
+
+  private stableStringify(value: unknown): string {
+    if (value === null || typeof value !== 'object') {
+      return JSON.stringify(value) ?? 'null';
+    }
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => this.stableStringify(item)).join(',')}]`;
+    }
+    const entries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${this.stableStringify(
+            (value as Record<string, unknown>)[key],
+          )}`,
+      );
+    return `{${entries.join(',')}}`;
+  }
+
+  private async recordDedupeDecision(
+    decision: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    this.logger.log({
+      message: 'Idempotent enqueue dedupe decision',
+      decision,
+      ...details,
+    });
+    try {
+      await this.auditService.record({
+        action: 'job_queue.idempotent_enqueue',
+        outcome: decision,
+        metadata: details,
+      });
+    } catch (error) {
+      // Auditing must not block the enqueue decision itself.
+      this.logger.warn(
+        `Failed to record idempotent enqueue audit entry: ${error.message}`,
+      );
+    }
+  }
 
   /**
    * Enqueue a job for immediate execution

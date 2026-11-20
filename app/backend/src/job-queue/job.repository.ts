@@ -54,6 +54,34 @@ export interface PaginatedJobs {
 }
 
 /**
+ * Options for looking up an active job by idempotency key and/or
+ * operation/resource identity.
+ *
+ * Used to deduplicate admin background-job actions so that repeated
+ * operator requests (e.g. after a timeout) return the existing run
+ * instead of starting duplicate reconciliation or cleanup work.
+ */
+export interface ActiveJobLookup {
+  /** Scoped idempotency key (preferred dedupe signal). */
+  idempotencyKey?: string;
+  /** Job type / operation to match when no idempotency key is supplied. */
+  type?: JobType;
+  /** Resource identifier (e.g. tenant, account, entity id) to match. */
+  resource?: string;
+  /**
+   * Active run window in milliseconds. Only jobs created within this
+   * window are considered active. Defaults to 24 hours.
+   */
+  activeWindowMs?: number;
+}
+
+/** Default active run window for dedupe lookups (24 hours). */
+const DEFAULT_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Statuses considered "active" for dedupe purposes. */
+const ACTIVE_STATUSES: JobStatus[] = [JobStatus.PENDING, JobStatus.RUNNING];
+
+/**
  * Repository for job database operations
  * 
  * Provides methods for creating, updating, and querying jobs in the database.
@@ -79,7 +107,9 @@ export class JobRepository {
    * @param payload - Job-specific payload data
    * @param maxAttempts - Maximum retry attempts
    * @param scheduledAt - When the job should execute (defaults to now)
-   * @returns The created job
+   * @param idempotencyKey - Optional scoped idempotency key; on unique
+   *   conflict the existing job is returned instead of throwing
+   * @returns The created job (or the existing job on idempotency conflict)
    * 
    * **Validates: Requirement 12.1** - Job persistence to database
    */
@@ -114,6 +144,10 @@ export class JobRepository {
           .eq('idempotency_key', idempotencyKey)
           .single();
         if (!existing.error && existing.data) {
+          this.logger.debug(
+            `Idempotency conflict for key ${idempotencyKey} (type: ${type}); ` +
+              `returning existing job ${(existing.data as JobRow).id}`,
+          );
           return this.mapRowToJob<TPayload>(existing.data as JobRow);
         }
       }
@@ -122,6 +156,81 @@ export class JobRepository {
     }
 
     this.logger.debug(`Job created: ${data.id} (type: ${type})`);
+    return this.mapRowToJob<TPayload>(data as JobRow);
+  }
+
+  /**
+   * Find an active job matching an idempotency key and/or operation/resource.
+   *
+   * A job is considered active when its status is `pending` or `running`
+   * and it was created within the active run window. This is used to
+   * deduplicate admin background-job actions: repeated requests return
+   * the existing run instead of starting duplicate work.
+   *
+   * When both an idempotency key and operation/resource are supplied, the
+   * idempotency key takes precedence (it is the scoped dedupe signal).
+   * When only operation/resource are supplied, the most recent active job
+   * matching those parameters is returned.
+   *
+   * @param lookup - Lookup criteria
+   * @returns The active job, or null if none found
+   */
+  async findActiveJob<TPayload = unknown>(
+    lookup: ActiveJobLookup,
+  ): Promise<Job<TPayload> | null> {
+    const { idempotencyKey, type, resource } = lookup;
+    const activeWindowMs = lookup.activeWindowMs ?? DEFAULT_ACTIVE_WINDOW_MS;
+
+    if (!idempotencyKey && !type) {
+      // Without an idempotency key or operation type there is nothing
+      // safe to deduplicate on.
+      return null;
+    }
+
+    const windowStart = new Date(Date.now() - activeWindowMs).toISOString();
+
+    let query = this.client
+      .from('jobs')
+      .select('*')
+      .in('status', ACTIVE_STATUSES)
+      .gte('created_at', windowStart);
+
+    if (idempotencyKey) {
+      query = query.eq('idempotency_key', idempotencyKey);
+      if (type) {
+        query = query.eq('type', type);
+      }
+    } else {
+      // Operation/resource dedupe path
+      query = query.eq('type', type as JobType);
+      if (resource !== undefined) {
+        query = query.eq('payload->>resource', resource);
+      }
+    }
+
+    const { data, error } = await query
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    // PGRST116 = "no rows returned" — treat as not found, not an error
+    if (error?.code === 'PGRST116') {
+      return null;
+    }
+
+    if (error) {
+      this.logger.error(
+        `Failed to find active job (key: ${idempotencyKey ?? 'n/a'}, ` +
+          `type: ${type ?? 'n/a'}, resource: ${resource ?? 'n/a'}): ${error.message}`,
+        error,
+      );
+      throw error;
+    }
+
+    if (!data) {
+      return null;
+    }
+
     return this.mapRowToJob<TPayload>(data as JobRow);
   }
 

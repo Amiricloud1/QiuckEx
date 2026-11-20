@@ -107,8 +107,30 @@ export const envSchema = Joi.object({
   SOROBAN_RPC_TIMEOUT_MS: Joi.number()
     .integer()
     .min(1000)
+    .max(60000)
     .default(10000)
     .description("Timeout in milliseconds for Soroban RPC requests"),
+
+  HORIZON_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(60000)
+    .default(10000)
+    .description("Timeout in milliseconds for Horizon HTTP requests"),
+
+  SUPABASE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(60000)
+    .default(10000)
+    .description("Timeout in milliseconds for Supabase client requests"),
+
+  REDIS_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(30000)
+    .default(2000)
+    .description("Timeout in milliseconds for Redis commands"),
 
   SOROBAN_RPC_MAX_RETRIES: Joi.number()
     .integer()
@@ -543,6 +565,9 @@ export interface EnvConfig {
   SOROBAN_RPC_URLS?: string;
   SOROBAN_RPC_TIMEOUT_MS: number;
   SOROBAN_RPC_MAX_RETRIES: number;
+  HORIZON_TIMEOUT_MS: number;
+  SUPABASE_TIMEOUT_MS: number;
+  REDIS_TIMEOUT_MS: number;
   STELLAR_EXPLORER_URL?: string;
   STELLAR_SECRET_KEY?: string;
   STELLAR_PUBLIC_KEY?: string;

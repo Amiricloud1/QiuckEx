@@ -8,6 +8,103 @@ import {
 } from '../stellar/path-preview.service';
 import { PrivacyService } from '../privacy/privacy.service';
 
+/**
+ * Canonical receipt statuses ordered from earliest to latest.
+ * A receipt may only move forward through this ordering; a late or
+ * duplicated chain event must never regress the persisted state.
+ */
+export const RECEIPT_STATUS_ORDER = [
+  'pending',
+  'submitted',
+  'confirmed',
+  'settled',
+  'failed',
+  'expired',
+] as const;
+
+export type ReceiptStatus = (typeof RECEIPT_STATUS_ORDER)[number];
+
+/** Terminal statuses cannot be superseded by any later observation. */
+const TERMINAL_RECEIPT_STATUSES: ReadonlySet<ReceiptStatus> = new Set<ReceiptStatus>([
+  'settled',
+  'failed',
+  'expired',
+]);
+
+export interface ReceiptTransitionResult {
+  /** The status that should be persisted as canonical state. */
+  status: ReceiptStatus;
+  /** True when the incoming observation was applied to canonical state. */
+  applied: boolean;
+  /** True when the incoming observation matched the current status exactly. */
+  duplicate: boolean;
+  /** True when the incoming observation would have regressed canonical state. */
+  conflict: boolean;
+  /** The status the caller attempted to apply (retained as conflict evidence). */
+  observedStatus: ReceiptStatus;
+  /** The canonical status before the observation was evaluated. */
+  previousStatus: ReceiptStatus;
+}
+
+export class ReceiptTransitionConflictError extends Error {
+  constructor(
+    public readonly previousStatus: ReceiptStatus,
+    public readonly observedStatus: ReceiptStatus,
+  ) {
+    super(
+      `Receipt status transition from '${previousStatus}' to '${observedStatus}' is not allowed`,
+    );
+    this.name = 'ReceiptTransitionConflictError';
+  }
+}
+
+/**
+ * Pure transition helper: given the current canonical status and an observed
+ * status, decide whether the observation may be applied. Never throws; callers
+ * receive the canonical status plus conflict evidence.
+ */
+export function reconcileReceiptStatus(
+  current: ReceiptStatus,
+  observed: ReceiptStatus,
+): ReceiptTransitionResult {
+  const currentIndex = RECEIPT_STATUS_ORDER.indexOf(current);
+  const observedIndex = RECEIPT_STATUS_ORDER.indexOf(observed);
+
+  if (current === observed) {
+    return {
+      status: current,
+      applied: false,
+      duplicate: true,
+      conflict: false,
+      observedStatus: observed,
+      previousStatus: current,
+    };
+  }
+
+  const isTerminal = TERMINAL_RECEIPT_STATUSES.has(current);
+  const isForward = observedIndex > currentIndex;
+
+  if (!isTerminal && isForward) {
+    return {
+      status: observed,
+      applied: true,
+      duplicate: false,
+      conflict: false,
+      observedStatus: observed,
+      previousStatus: current,
+    };
+  }
+
+  return {
+    status: current,
+    applied: false,
+    duplicate: false,
+    conflict: true,
+    observedStatus: observed,
+    previousStatus: current,
+  };
+}
+
 @Injectable()
 export class LinksService {
   private readonly logger = new Logger(LinksService.name);
@@ -16,6 +113,57 @@ export class LinksService {
     @Optional() private readonly pathPreviewService?: PathPreviewService,
     @Optional() private readonly privacyService?: PrivacyService,
   ) {}
+
+  /**
+   * Reconcile an observed receipt status against the canonical status at the
+   * service boundary. Out-of-order observations cannot regress canonical state;
+   * conflicts are surfaced as a typed result and logged without personal data.
+   */
+  reconcileReceiptStatus(
+    current: ReceiptStatus,
+    observed: ReceiptStatus,
+    referenceId?: string | null,
+  ): ReceiptTransitionResult {
+    const result = reconcileReceiptStatus(current, observed);
+
+    if (result.conflict) {
+      this.logger.warn(
+        `Receipt status conflict: observed '${result.observedStatus}' would regress canonical '${result.previousStatus}'` +
+          (referenceId ? ` (ref: ${this.maskReferenceId(referenceId)})` : ''),
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Apply an observed receipt status, throwing a typed error on conflict.
+   * Duplicate observations are idempotent and return the canonical status.
+   */
+  applyReceiptStatus(
+    current: ReceiptStatus,
+    observed: ReceiptStatus,
+    referenceId?: string | null,
+  ): ReceiptStatus {
+    const result = this.reconcileReceiptStatus(current, observed, referenceId);
+
+    if (result.conflict) {
+      throw new ReceiptTransitionConflictError(
+        result.previousStatus,
+        result.observedStatus,
+      );
+    }
+
+    return result.status;
+  }
+
+  private maskReferenceId(referenceId: string): string {
+    const trimmed = referenceId.trim();
+    if (trimmed.length <= 4) {
+      return '****';
+    }
+    return `${trimmed.slice(0, 2)}***${trimmed.slice(-2)}`;
+  }
 
   async generateMetadata(request: LinkMetadataRequestDto): Promise<LinkMetadataResponseDto> {
     const amt = this.validateAmount(request.amount);
