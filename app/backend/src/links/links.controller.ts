@@ -46,7 +46,12 @@ export class LinksController {
   })
   @ApiResponse({
     status: 400,
-    description: "Validation failed",
+    description:
+      "Validation failed. Returns a stable error code and message. " +
+      "Signed transaction XDR payloads are limited to a documented maximum size " +
+      "(see LinkValidationError codes, e.g. SIGNED_XDR_TOO_LARGE); oversized " +
+      "payloads are rejected before decoding or simulation. Raw XDR is never " +
+      "echoed in the error response.",
   })
   @ApiResponse({
     status: 429,

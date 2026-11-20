@@ -2,12 +2,61 @@ import { Injectable, Logger } from "@nestjs/common";
 import { CircuitBreaker, CircuitBreakerOptions, CircuitState } from "./circuit-breaker";
 import { MetricsService } from "../metrics/metrics.service";
 
+/**
+ * Safe, privacy-preserving correlation metadata for a dependency failure.
+ * Only approved upstream request identifiers are propagated; addresses,
+ * payloads, and other potentially sensitive data must never be included.
+ */
+export interface DependencyErrorMetadata {
+  dependency: string;
+  /** Upstream request id, present only when the upstream supplied one. */
+  upstreamRequestId?: string;
+}
+
 @Injectable()
 export class CircuitBreakerService {
   private readonly logger = new Logger(CircuitBreakerService.name);
   private readonly breakers = new Map<string, CircuitBreaker>();
 
   constructor(private readonly metricsService: MetricsService) {}
+
+  /**
+   * Builds structured dependency error metadata for a failed upstream call.
+   * The upstream request id is included only when supplied; nothing else
+   * about the request (addresses, payloads, headers) is captured.
+   */
+  buildDependencyErrorMetadata(
+    dependency: string,
+    upstreamRequestId?: string | null,
+  ): DependencyErrorMetadata {
+    const metadata: DependencyErrorMetadata = { dependency };
+    if (typeof upstreamRequestId === "string" && upstreamRequestId.trim() !== "") {
+      metadata.upstreamRequestId = upstreamRequestId.trim();
+    }
+    return metadata;
+  }
+
+  /**
+   * Records a failure against a named breaker, attaching safe dependency
+   * error metadata (including any upstream request id) for correlation.
+   * Returns the metadata so callers can surface it in client responses.
+   */
+  recordFailure(
+    name: string,
+    upstreamRequestId?: string | null,
+  ): DependencyErrorMetadata {
+    const breaker = this.getOrCreate(name);
+    breaker.recordFailure();
+    const metadata = this.buildDependencyErrorMetadata(name, upstreamRequestId);
+    if (metadata.upstreamRequestId) {
+      this.logger.warn(
+        `Circuit breaker '${name}' recorded failure (upstreamRequestId=${metadata.upstreamRequestId})`,
+      );
+    } else {
+      this.logger.warn(`Circuit breaker '${name}' recorded failure`);
+    }
+    return metadata;
+  }
 
   /**
    * Get (or lazily create) a named circuit breaker.

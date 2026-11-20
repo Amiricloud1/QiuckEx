@@ -8,6 +8,17 @@ import {
 } from '../stellar/path-preview.service';
 import { PrivacyService } from '../privacy/privacy.service';
 
+/**
+ * Documented upper bound (in bytes) for a signed transaction XDR envelope.
+ *
+ * Stellar transaction envelopes are small in practice (a few hundred bytes to
+ * a few kilobytes). We cap the accepted signed XDR at 100 KiB so that oversized
+ * or malformed payloads are rejected before any expensive decode/simulation
+ * work is performed. This bound is intentionally generous to accommodate
+ * multi-operation transactions with large memos while still protecting CPU.
+ */
+export const MAX_SIGNED_XDR_BYTES = 100 * 1024;
+
 @Injectable()
 export class LinksService {
   private readonly logger = new Logger(LinksService.name);
@@ -107,6 +118,44 @@ export class LinksService {
         ...additionalMetadata,
       },
     };
+  }
+
+  /**
+   * Validates the size of a signed transaction XDR string before any decoding
+   * or simulation occurs.
+   *
+   * Rejects payloads whose UTF-8 byte length exceeds {@link MAX_SIGNED_XDR_BYTES}
+   * with a stable {@link LinkErrorCode.SIGNED_XDR_TOO_LARGE} validation error.
+   * The raw XDR is never logged or included in the error message.
+   *
+   * @param signedXdr Base64-encoded signed transaction XDR envelope.
+   * @returns The validated signed XDR string (unchanged).
+   * @throws {LinkValidationError} When the payload exceeds the documented bound.
+   */
+  validateSignedXdrSize(signedXdr: string): string {
+    if (typeof signedXdr !== 'string') {
+      throw new LinkValidationError(
+        LinkErrorCode.INVALID_SIGNED_XDR,
+        'Signed transaction XDR must be a string',
+        'signedXdr',
+      );
+    }
+
+    const byteLength = Buffer.byteLength(signedXdr, 'utf8');
+
+    if (byteLength > MAX_SIGNED_XDR_BYTES) {
+      // Never log the raw XDR; only report the observed size.
+      this.logger.warn(
+        `Rejected oversized signed transaction XDR (${byteLength} bytes > ${MAX_SIGNED_XDR_BYTES} bytes)`,
+      );
+      throw new LinkValidationError(
+        LinkErrorCode.SIGNED_XDR_TOO_LARGE,
+        `Signed transaction XDR cannot exceed ${MAX_SIGNED_XDR_BYTES} bytes`,
+        'signedXdr',
+      );
+    }
+
+    return signedXdr;
   }
 
   private validateAmount(amount: number): string {
