@@ -7,12 +7,57 @@
  * **Validates: Requirements 1.5, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 6.1, 6.2, 15.2, 15.3**
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { JobRepository, JobFilters, PaginatedJobs } from './job.repository';
 import { JobRegistry } from './job-registry.service';
 import { CancellationStore } from './cancellation-token';
 import { JobQueueMetricsService } from './job-queue-metrics.service';
+import { AppConfigService } from '../config/app-config.service';
 import { Job, JobType, JobStatus } from './types';
+
+/**
+ * Safe, admin-scoped projection of a job's retry/triage status.
+ *
+ * Deliberately omits payload, credentials, and any other job data so that
+ * operators can triage queued or repeatedly failing jobs without exposing
+ * secrets or unnecessary personal data.
+ */
+export interface JobStatusProjection {
+  /** Job identifier */
+  id: string;
+  /** Job type */
+  type: JobType;
+  /** Current job status */
+  status: JobStatus;
+  /** Number of attempts made so far */
+  attempts: number;
+  /** Maximum attempts allowed by the retry policy */
+  maxAttempts: number;
+  /** When the job is next scheduled to run (next retry / initial run) */
+  nextRetryAt: string | null;
+  /** Stable, machine-readable failure code (null when not failed) */
+  failureCode: string | null;
+  /** Correlation ID for tracing across logs and downstream systems */
+  correlationId: string | null;
+  /** When the job was created */
+  createdAt: string;
+  /** When the job reached a terminal state, if applicable */
+  completedAt: string | null;
+}
+
+/**
+ * Result of a single retention cleanup pass.
+ */
+export interface RetentionCleanupResult {
+  /** Number of terminal job records deleted in this pass */
+  deleted: number;
+  /** Retention window applied (in days) */
+  retentionDays: number;
+  /** Batch size used for paginated deletion */
+  batchSize: number;
+  /** Cutoff timestamp; terminal jobs completed before this are eligible */
+  cutoff: string;
+}
 
 /**
  * Error thrown when attempting to enqueue a job with an unregistered type
@@ -56,6 +101,7 @@ export class JobQueueService {
     private readonly registry: JobRegistry,
     private readonly cancellationStore: CancellationStore,
     private readonly metrics: JobQueueMetricsService,
+    private readonly config: AppConfigService,
   ) {}
 
   /**
@@ -237,5 +283,79 @@ export class JobQueueService {
    */
   async listJobs(filters: JobFilters = {}): Promise<PaginatedJobs> {
     return this.repository.listJobs(filters);
+  }
+
+  /**
+   * Get a safe, admin-scoped status projection for a job.
+   *
+   * Returns only triage metadata (attempts, next retry, stable failure code,
+   * correlation ID) and never the job payload or credentials.
+   *
+   * @param jobId - The job ID
+   * @returns The safe status projection
+   * @throws NotFoundException if the job does not exist
+   *
+   * **Validates: Requirement 5.2** (via admin controller)
+   */
+  async getJobStatusProjection(jobId: string): Promise<JobStatusProjection> {
+    const job = await this.repository.findById(jobId);
+
+    if (!job) {
+      throw new NotFoundException(`Job not found: ${jobId}`);
+    }
+
+    return {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+      nextRetryAt: job.scheduledAt ? job.scheduledAt.toISOString() : null,
+      failureCode: job.failureCode ?? null,
+      correlationId: job.correlationId ?? null,
+      createdAt: job.createdAt.toISOString(),
+      completedAt: job.completedAt ? job.completedAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * Run a single retention cleanup pass for terminal jobs.
+   *
+   * Deletes terminal (completed/failed/cancelled) job records whose
+   * completedAt is older than the configured retention window. Active jobs
+   * (pending/running) are never touched. Deletion is paginated and idempotent:
+   * running the pass repeatedly only removes records still past the cutoff.
+   *
+   * Retention duration and batch size are configurable via
+   * `jobRetentionDays` and `jobRetentionCleanupBatchSize`.
+   *
+   * @returns Summary of the cleanup pass
+   */
+  async cleanupExpiredJobs(): Promise<RetentionCleanupResult> {
+    const retentionDays = this.config.jobRetentionDays;
+    const batchSize = this.config.jobRetentionCleanupBatchSize;
+
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
+    const deleted = await this.repository.deleteTerminalJobsBefore(
+      cutoff,
+      batchSize,
+    );
+
+    // Structured logging: counts only, never payload data
+    this.logger.log({
+      message: 'Job retention cleanup completed',
+      deleted,
+      retentionDays,
+      batchSize,
+      cutoff: cutoff.toISOString(),
+    });
+
+    return {
+      deleted,
+      retentionDays,
+      batchSize,
+      cutoff: cutoff.toISOString(),
+    };
   }
 }

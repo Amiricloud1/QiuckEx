@@ -27,6 +27,7 @@ import { JobRepository, JobFilters } from './job.repository';
 import { JobReplayRepository } from './job-replay.repository';
 import { JobType, JobStatus, Job } from './types';
 import { DerivedRecordRepairPayload } from './types';
+import { JobStatusProjection } from './job-status.projection';
 import { ApiKeyGuard } from '../auth/guards/api-key.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 
@@ -155,6 +156,30 @@ export class JobAdminController {
     }
 
     return job;
+  }
+
+  /**
+   * Get safe retry status for a specific job
+   * 
+   * Returns an operator-facing projection containing only non-sensitive
+   * triage metadata: attempts, next retry time, stable failure code, and
+   * correlation ID. The job payload and any credentials are never included.
+   * 
+   * **Validates: Requirement 5.2 (safe status view)**
+   */
+  @Get(':id/status')
+  @RequireScopes('admin')
+  @ApiOperation({ summary: 'Get safe retry status for a job' })
+  @ApiResponse({ status: 200, description: 'Safe job status projection' })
+  @ApiResponse({ status: 404, description: 'Job not found' })
+  async getJobStatus(@Param('id') id: string): Promise<JobStatusProjection> {
+    const job = await this.jobQueueService.getJob(id);
+
+    if (!job) {
+      throw new NotFoundException(`Job not found: ${id}`);
+    }
+
+    return JobStatusProjection.fromJob(job);
   }
 
   /**
