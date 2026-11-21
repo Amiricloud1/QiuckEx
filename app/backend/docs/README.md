@@ -43,6 +43,25 @@ The QuickEx backend is a NestJS-based application that provides a comprehensive 
   - Address validation and conversion
   - Event type classification
 
+## Transaction Detail Hierarchy
+
+Transaction detail responses are ordered so that the actionable financial summary is presented before raw chain metadata. This applies equally to the payer and recipient views.
+
+### Primary facts (always visible, in order)
+1. **Amount** — the transferred value
+2. **Asset** — asset code / issuer (or native XLM)
+3. **Counterpart** — the other party (payer for recipients, recipient for payers)
+4. **Status** — current lifecycle state (e.g. pending, confirmed, failed, refunded)
+5. **Ledger evidence** — ledger sequence and confirmation reference proving the transaction
+
+### Advanced metadata (behind a disclosure)
+Raw chain identifiers — full transaction hash, operation IDs, memo, raw XDR, and other low-level fields — are grouped behind a collapsible disclosure control. They remain available on demand but are not shown before the primary facts.
+
+### Accessibility
+- The disclosure control is a focusable button reachable via keyboard tab order.
+- It toggles with `Enter` and `Space` and exposes `aria-expanded` reflecting the current state.
+- The controlled region is associated via `aria-controls` and is hidden from assistive tech while collapsed.
+
 ## API Endpoints
 
 ### Health Checks
@@ -242,82 +261,4 @@ curl http://localhost:4000/reconciliation/status
 curl -X POST http://localhost:4000/reconciliation/backfill \
   -H "Content-Type: application/json" \
   -d '{"startLedger": 1000, "endLedger": 2000}'
-
-# Monitor backfill progress
-curl http://localhost:4000/reconciliation/backfill/status
 ```
-
-### Common Issues
-
-#### Ingestion Stream Stalled
-- Symptom: `ingestion_lag_seconds` increasing continuously
-- Resolution: Check Horizon API status, restart ingestion service
-- Prevention: Monitor lag metric, set up alerts at 60s threshold
-
-#### High Webhook Failure Rate
-- Symptom: `webhook_retry_total` increasing, `error_total{service="webhook"}` high
-- Resolution: Check webhook URL accessibility, verify secret configuration
-- Prevention: Monitor webhook delivery logs, test endpoints before registration
-
-#### Reconciliation Discrepancies
-- Symptom: High `irreconcilable` count in reconciliation report
-- Resolution: Manual review of flagged records, verify on-chain state
-- Prevention: Regular reconciliation runs, monitor Horizon API health
-
-#### Horizon API Latency
-- Symptom: High `external_call_duration_seconds{service="horizon"}`
-- Resolution: Check Horizon status, consider failover to backup instance
-- Prevention: Implement failover logic, monitor Horizon response times
-
-## Security
-
-### Features
-- Helmet for security headers
-- CORS configuration
-- Input validation and sanitization
-- Environment variable validation
-
-### Best Practices
-- Principle of least privilege
-- Secure secret management
-- Regular dependency updates
-
-## Development
-
-### Getting Started
-```bash
-# Install dependencies
-npm install
-
-# Minimal local env required for boot
-export NETWORK=testnet
-export SUPABASE_URL=http://127.0.0.1:54321
-export SUPABASE_ANON_KEY=your_supabase_anon_key
-
-# Run development server
-npm run start:dev
-
-# Run linting
-npm run lint
-
-# Run type checking
-npm run type-check
-```
-
-### Code Style
-- ESLint configuration for consistent code style
-- Prettier for code formatting
-- TypeScript for type safety
-
-## Contributing
-
-### Guidelines
-- Follow existing code patterns and conventions
-- Write comprehensive tests for new features
-- Update documentation for API changes
-- Ensure all tests pass before submitting PRs
-
-### Git Workflow
-- Feature branches for new development
-- Pull requests for code review
-- Semantic versioning for releases

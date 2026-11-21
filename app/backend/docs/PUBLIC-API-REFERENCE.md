@@ -158,3 +158,34 @@ def quickex_hook():
     # handle event...
     return "ok", 200
 ```
+
+---
+
+## Transaction detail
+
+Transaction detail views present a fixed hierarchy so the actionable financial summary is read first and raw chain metadata is available on demand. The same hierarchy applies to both the **payer** and **recipient** perspectives; only the counterpart label changes.
+
+### Presentation order
+
+1. **Amount** — the settled amount, formatted with the asset's precision.
+2. **Asset** — the asset code (e.g. `XLM`, `USDC`).
+3. **Counterpart** — the payer (recipient view) or recipient (payer view).
+4. **Status** — e.g. `pending`, `confirmed`, `failed`.
+5. **Ledger evidence** — confirmation time and a link to the on-chain transaction.
+
+Advanced/raw chain metadata (full account addresses, `transaction_hash`, internal `id`/`link_id`) is placed behind a disclosure control labelled **"Advanced details"**. The disclosure is a native `<details>`/`<summary>` element (or a button with `aria-expanded` and `aria-controls`), so it is reachable and toggleable by keyboard and exposes its expanded state to assistive technology.
+
+### Fields
+
+The webhook `payment` object carries the same fields used by the detail view:
+
+| Field | Hierarchy | Notes |
+| --- | --- | --- |
+| `amount` | Primary | Settled amount as a string. |
+| `asset` | Primary | Asset code. |
+| `from` / `to` | Primary (counterpart) | The counterpart is shown; the full address is in advanced details. |
+| `confirmed_at` | Primary (ledger evidence) | Confirmation timestamp. |
+| `transaction_hash` | Advanced | Raw on-chain identifier, behind disclosure. |
+| `id` / `link_id` | Advanced | Internal identifiers, behind disclosure. |
+
+Raw identifiers remain available in the API response and are never omitted from the payload; the hierarchy only governs presentation order and disclosure.
