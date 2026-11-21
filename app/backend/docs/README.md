@@ -63,6 +63,22 @@ Automated tests cover representative asset precisions (including the smallest su
 - `fee <= configured ceiling`.
 - Small deposits round the fee down to `0` rather than consuming the deposit.
 
+## Storage-Layout Compatibility Fixtures
+
+Upgrade checks must exercise realistic serialized state from the version being migrated, not only freshly initialized state. The escrow contract keeps a minimal prior-version storage-layout fixture for this purpose.
+
+### Fixture contents
+- A serialized snapshot of the prior contract version's persisted escrow record, including `owner`, `asset`, `amount`, `status`, and `nonce`.
+- The fixture is committed alongside the contract tests and decoded during CI so layout drift is caught before deployment.
+
+### Migration guarantees
+- Migration from the prior version preserves `owner`, `asset`, `amount`, `status`, and `nonce` exactly.
+- Migration is deterministic: replaying the same fixture always yields the same migrated state.
+- Migration fails closed: unknown fields or unsupported prior versions are rejected rather than silently coerced.
+
+### Tested boundaries
+Automated tests decode the fixture, run the migration, and assert field preservation, determinism across repeated runs, and rejection of unknown fields and unsupported versions.
+
 ## Transaction Detail Hierarchy
 
 Transaction detail responses are ordered so that the actionable financial summary is presented before raw chain metadata. This applies equally to the payer and recipient views.
@@ -217,34 +233,6 @@ npm run start
 
 ### Logging
 - Structured logging with Winston
-- Correlation IDs for request tracing
-- Different log levels for development and production
-- All logs include: `request_id`, `user_id`, `route`, `method`, `duration`, `status`
-
-## Runbook
-
-### Observability
-
-#### Checking Request Traces
-1. Extract `correlationId` from request headers (`x-correlation-id`)
-2. Search logs for the correlation ID to trace full request lifecycle
-3. Check `logs/combined.log` for structured JSON logs
-4. Check `logs/error.log` for error-specific logs
-
-#### Monitoring Ingestion Lag
-1. Query `ingestion_lag_seconds` metric for contract ID
-2. Alert if lag exceeds 60 seconds (indicates stalled ingestion)
-3. Check ingestion service logs for stream errors
-4. Verify Horizon API connectivity
-
-#### Debugging Webhook Failures
-1. Check `webhook_retry_total` metric for retry counts
-2. Query `webhook_delivery_duration_seconds` for latency patterns
-3. Review notification logs in database for specific webhook URLs
-4. Use `GET /webhooks/delivery-logs` endpoint for detailed logs
-5. Trigger manual redelivery via `POST /webhooks/redeliver`
-
-#### Identifying Slow External Dependencies
-1. Query `external_call_duration_seconds` by service label
-2. High latency on `horizon` operations indicates network issues
-3. High latency on `w
+- Request/response logging with correlation IDs
+- Error logging with stack traces
+- Performance metrics logging
