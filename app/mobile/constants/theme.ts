@@ -12,6 +12,29 @@ import { LightTheme, DarkTheme } from '../src/theme/tokens';
 const tintColorLight = LightTheme.tint;
 const tintColorDark = DarkTheme.tint;
 
+/**
+ * Unverified-asset visual treatment tokens.
+ *
+ * Re-exported from `src/theme/tokens` so legacy ThemedText / ThemedView
+ * consumers render the same badge treatment as the new components.
+ * The treatment never relies on color alone: it pairs a text label and
+ * icon with the color, and the explanation is keyboard accessible.
+ */
+export const UnverifiedAssetColors = {
+  light: {
+    background: LightTheme.unverifiedBackground,
+    border: LightTheme.unverifiedBorder,
+    text: LightTheme.unverifiedText,
+    icon: LightTheme.unverifiedIcon,
+  },
+  dark: {
+    background: DarkTheme.unverifiedBackground,
+    border: DarkTheme.unverifiedBorder,
+    text: DarkTheme.unverifiedText,
+    icon: DarkTheme.unverifiedIcon,
+  },
+};
+
 export const Colors = {
   light: {
     text: LightTheme.textPrimary,
@@ -20,6 +43,7 @@ export const Colors = {
     icon: LightTheme.tabIconDefault,
     tabIconDefault: LightTheme.tabIconDefault,
     tabIconSelected: tintColorLight,
+    unverified: UnverifiedAssetColors.light,
   },
   dark: {
     text: DarkTheme.textPrimary,
@@ -28,6 +52,7 @@ export const Colors = {
     icon: DarkTheme.tabIconDefault,
     tabIconDefault: DarkTheme.tabIconDefault,
     tabIconSelected: tintColorDark,
+    unverified: UnverifiedAssetColors.dark,
   },
 };
 
