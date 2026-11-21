@@ -66,6 +66,9 @@ use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Map, Vec};
 #[cfg(test)]
 use soroban_sdk::xdr::ToXdr;
 
+#[cfg(test)]
+mod upgrade_safety_tests;
+
 use crate::types::{
     CachedOraclePrice, DisputeVote, EscrowEntry, FeeConfig, Role, StealthEscrowEntry,
     TtlExtensionFeeConfig,
@@ -854,6 +857,42 @@ pub fn set_contract_version(env: &Env, version: u32) {
     env.storage()
         .persistent()
         .set(&DataKey::SchemaVersion, &version);
+}
+
+/// Validate that a proposed schema version is a legal upgrade step.
+///
+/// The upgrade safety gate only permits a single-step forward migration:
+/// the target version must be exactly `current + 1`. Downgrades, no-op
+/// re-applications, and multi-step jumps are rejected so that every
+/// intermediate migration is rehearsed and applied in order.
+///
+/// Returns `Ok(())` when the transition is allowed, or a deterministic
+/// error string describing the violated boundary.
+pub fn validate_schema_version_transition(
+    current: Option<u32>,
+    target: u32,
+) -> Result<(), &'static str> {
+    let current = current.unwrap_or(LEGACY_SCHEMA_VERSION);
+    if target <= current {
+        return Err("schema version must increase by exactly one (downgrade or no-op rejected)");
+    }
+    if target != current + 1 {
+        return Err("schema version jump rejected: only single-step upgrades are allowed");
+    }
+    Ok(())
+}
+
+/// Apply a schema version transition through the upgrade safety gate.
+///
+/// Reads the stored schema version, validates the transition with
+/// [`validate_schema_version_transition`], and only then persists the new
+/// version. On rejection the stored version is left untouched so a failed
+/// rehearsal cannot corrupt on-chain metadata.
+pub fn apply_schema_version_upgrade(env: &Env, target: u32) -> Result<(), &'static str> {
+    let current = get_schema_version(env);
+    validate_schema_version_transition(current, target)?;
+    set_schema_version(env, target);
+    Ok(())
 }
 
 pub fn get_schema_version(env: &Env) -> Option<u32> {
