@@ -49,6 +49,9 @@ use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Map, Vec};
 #[cfg(test)]
 use soroban_sdk::xdr::ToXdr;
 
+#[cfg(test)]
+mod upgrade_safety_tests;
+
 use crate::types::{
     CachedOraclePrice, DisputeVote, EscrowEntry, FeeConfig, Role, StealthEscrowEntry,
     TtlExtensionFeeConfig,
@@ -777,6 +780,42 @@ pub fn set_contract_version(env: &Env, version: u32) {
         .set(&DataKey::SchemaVersion, &version);
 }
 
+/// Validate that a proposed schema version is a legal upgrade step.
+///
+/// The upgrade safety gate only permits a single-step forward migration:
+/// the target version must be exactly `current + 1`. Downgrades, no-op
+/// re-applications, and multi-step jumps are rejected so that every
+/// intermediate migration is rehearsed and applied in order.
+///
+/// Returns `Ok(())` when the transition is allowed, or a deterministic
+/// error string describing the violated boundary.
+pub fn validate_schema_version_transition(
+    current: Option<u32>,
+    target: u32,
+) -> Result<(), &'static str> {
+    let current = current.unwrap_or(LEGACY_SCHEMA_VERSION);
+    if target <= current {
+        return Err("schema version must increase by exactly one (downgrade or no-op rejected)");
+    }
+    if target != current + 1 {
+        return Err("schema version jump rejected: only single-step upgrades are allowed");
+    }
+    Ok(())
+}
+
+/// Apply a schema version transition through the upgrade safety gate.
+///
+/// Reads the stored schema version, validates the transition with
+/// [`validate_schema_version_transition`], and only then persists the new
+/// version. On rejection the stored version is left untouched so a failed
+/// rehearsal cannot corrupt on-chain metadata.
+pub fn apply_schema_version_upgrade(env: &Env, target: u32) -> Result<(), &'static str> {
+    let current = get_schema_version(env);
+    validate_schema_version_transition(current, target)?;
+    set_schema_version(env, target);
+    Ok(())
+}
+
 pub fn get_schema_version(env: &Env) -> Option<u32> {
     env.storage()
         .persistent()
@@ -1398,4 +1437,159 @@ pub fn put_dispute_evidence(
 pub fn has_dispute_evidence(env: &Env, commitment: &Bytes, evidence_hash: &BytesN<32>) -> bool {
     let key = DataKey::DisputeEvidence(commitment.clone(), evidence_hash.clone());
     env.storage().persistent().has(&key)
+}
+
+#[cfg(test)]
+mod upgrade_safety_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Env, IntoVal};
+
+    fn test_env() -> Env {
+        let env = Env::default();
+        env.mock_all_auths();
+        env
+    }
+
+    fn sample_escrow(env: &Env, owner: &Address) -> EscrowEntry {
+        EscrowEntry {
+            token: Address::generate(env),
+            amount_due: 1_000,
+            amount_paid: 0,
+            owner: owner.clone(),
+            status: crate::types::EscrowStatus::Pending,
+            created_at: 10,
+            expires_at: 20,
+            arbiter: None,
+            arbiters: Vec::new(env),
+            arbiter_threshold: 0,
+            memo: None,
+            milestones: Vec::new(env),
+        }
+    }
+
+    #[test]
+    fn schema_version_increments_by_exactly_one() {
+        let env = test_env();
+        assert_eq!(get_schema_version(&env), None);
+
+        apply_schema_version_upgrade(&env, LEGACY_SCHEMA_VERSION + 1).unwrap();
+        assert_eq!(get_schema_version(&env), Some(SCHEMA_VERSION));
+        assert_eq!(get_contract_version(&env), Some(CURRENT_CONTRACT_VERSION));
+    }
+
+    #[test]
+    fn schema_version_jump_is_rejected_and_state_unchanged() {
+        let env = test_env();
+        set_schema_version(&env, LEGACY_SCHEMA_VERSION);
+
+        let err = apply_schema_version_upgrade(&env, LEGACY_SCHEMA_VERSION + 2).unwrap_err();
+        assert_eq!(
+            err,
+            "schema version jump rejected: only single-step upgrades are allowed"
+        );
+        // Failed rehearsal must not mutate stored metadata.
+        assert_eq!(get_schema_version(&env), Some(LEGACY_SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn schema_version_downgrade_and_noop_are_rejected() {
+        let env = test_env();
+        set_schema_version(&env, SCHEMA_VERSION);
+
+        assert!(apply_schema_version_upgrade(&env, SCHEMA_VERSION).is_err());
+        assert!(apply_schema_version_upgrade(&env, SCHEMA_VERSION - 1).is_err());
+        assert_eq!(get_schema_version(&env), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn validate_transition_boundaries() {
+        assert!(validate_schema_version_transition(None, 1).is_ok());
+        assert!(validate_schema_version_transition(Some(1), 2).is_ok());
+        assert!(validate_schema_version_transition(Some(1), 1).is_err());
+        assert!(validate_schema_version_transition(Some(1), 0).is_err());
+        assert!(validate_schema_version_transition(Some(1), 3).is_err());
+        assert!(validate_schema_version_transition(Some(u32::MAX), u32::MAX).is_err());
+    }
+
+    #[test]
+    fn prior_data_key_variants_remain_readable_after_migration() {
+        let env = test_env();
+        let owner = Address::generate(&env);
+        let commitment = Bytes::from_array(&env, &[7u8; 32]);
+        let entry = sample_escrow(&env, &owner);
+
+        // Write through the legacy key path only.
+        env.storage()
+            .persistent()
+            .set(&legacy_escrow_key(&commitment), &entry);
+
+        // Legacy read still works before migration.
+        let before = get_escrow(&env, &commitment).expect("legacy escrow readable");
+        assert_eq!(before.amount_due, entry.amount_due);
+        assert_eq!(before.owner, owner);
+
+        // Run the migration and confirm the record is still readable.
+        assert!(migrate_legacy_escrow_record(&env, &commitment));
+        let after = get_escrow(&env, &commitment).expect("migrated escrow readable");
+        assert_eq!(after.amount_due, entry.amount_due);
+        assert_eq!(after.owner, owner);
+        assert_eq!(after.status, entry.status);
+
+        // Legacy payload is retired, compact payload is present.
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&legacy_escrow_key(&commitment)));
+        assert!(env
+            .storage()
+            .persistent()
+            .has(&compact_escrow_key(&commitment)));
+
+        // Migration is idempotent.
+        assert!(!migrate_legacy_escrow_record(&env, &commitment));
+    }
+
+    #[test]
+    fn prior_singleton_keys_remain_readable_after_version_bump() {
+        let env = test_env();
+        let admin = Address::generate(&env);
+
+        set_admin(&env, &admin);
+        set_paused(&env, true, 42);
+        increment_escrow_counter(&env);
+        set_schema_version(&env, LEGACY_SCHEMA_VERSION);
+
+        apply_schema_version_upgrade(&env, SCHEMA_VERSION).unwrap();
+
+        assert_eq!(get_admin(&env), Some(admin));
+        assert!(is_paused(&env));
+        assert_eq!(get_global_pause_reason(&env), 42);
+        assert_eq!(get_escrow_counter(&env), 1);
+        assert_eq!(get_schema_version(&env), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn post_upgrade_invariants_require_current_versions() {
+        let env = test_env();
+        let admin = Address::generate(&env);
+        set_admin(&env, &admin);
+
+        // Versions unset -> invariant failure.
+        assert!(assert_post_upgrade_invariants(&env).is_err());
+
+        set_contract_version(&env, CURRENT_CONTRACT_VERSION);
+        set_schema_version(&env, SCHEMA_VERSION);
+        assert!(assert_post_upgrade_invariants(&env).is_ok());
+    }
+
+    #[test]
+    fn data_key_variants_are_distinct_namespaces() {
+        let env = test_env();
+        let commitment = Bytes::from_array(&env, &[3u8; 32]);
+
+        let legacy: soroban_sdk::Val = legacy_escrow_key(&commitment).into_val(&env);
+        let compact: soroban_sdk::Val = compact_escrow_key(&commitment).into_val(&env);
+        assert_ne!(legacy, compact);
+    }
 }
