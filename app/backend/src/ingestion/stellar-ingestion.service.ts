@@ -22,6 +22,7 @@ import type {
   EscrowEvent,
   QuickExContractEvent,
 } from "./types/contract-event.types";
+import type { ReceiptTransitionResult } from "./escrow-event.repository";
 
 /** Milliseconds between reconnect attempts (doubles each retry, capped at MAX_BACKOFF_MS). */
 const INITIAL_BACKOFF_MS = 1_000;
@@ -482,25 +483,48 @@ export class StellarIngestionService implements OnModuleInit, OnModuleDestroy {
       `Processing ${event.eventType} paging_token=${event.pagingToken}`,
     );
 
-    await this.persistEvent(event);
+    const transition = await this.persistEvent(event);
+
+    // A rejected regression must not advance the cursor past the conflicting
+    // observation: the event is retained as conflict evidence and the cursor
+    // stays put so the evidence can be re-examined on the next pass.
+    if (transition?.outcome === "rejected_regression") {
+      this.logger.warn(
+        `Receipt status conflict: ${event.eventType} paging_token=${event.pagingToken} ` +
+          `receipt=${transition.receiptId ?? "unknown"} ` +
+          `observed=${transition.observedStatus ?? "unknown"} ` +
+          `canonical=${transition.canonicalStatus ?? "unknown"}`,
+      );
+      this.eventEmitter.emit("stellar.receipt_status_conflict", {
+        eventType: event.eventType,
+        pagingToken: event.pagingToken,
+        receiptId: transition.receiptId,
+        observedStatus: transition.observedStatus,
+        canonicalStatus: transition.canonicalStatus,
+      });
+      return;
+    }
+
     await this.safeUpdateCursor(streamId, raw.paging_token, raw.ledger);
 
     // Emit for other services / notification layer
     this.eventEmitter.emit(`stellar.${event.eventType}`, event);
   }
 
-  private async persistEvent(event: QuickExContractEvent): Promise<void> {
+  private async persistEvent(
+    event: QuickExContractEvent,
+  ): Promise<ReceiptTransitionResult | null> {
     switch (event.eventType) {
       case "EscrowDeposited":
       case "EscrowWithdrawn":
       case "EscrowRefunded":
-        await this.escrowRepo.upsertEvent(event as EscrowEvent);
-        break;
+        return this.escrowRepo.upsertEvent(event as EscrowEvent);
       default:
         // Other events are emitted but not stored in the DB yet.
         this.logger.debug(
           `Event ${event.eventType} emitted but not persisted.`,
         );
+        return null;
     }
   }
 

@@ -37,35 +37,31 @@ export interface FlagAuditEntry {
 }
 
 /**
- * Outcome of an API-key scope change attempt (issue #644).
- * `failure` entries are recorded for rejected/unauthorized attempts so that
- * failed mutations are distinguishable from successful ones in the audit trail.
- */
-export type ApiKeyScopeChangeOutcome = 'success' | 'failure';
-
-/**
- * Enriched audit entry recorded for API-key scope changes (issue #644).
- * Stored in `metadata` of the parent AuditLog under key `apiKeyScopeChangeAuditEntry`.
+ * Structured audit metadata recorded for idempotent background-job enqueue
+ * decisions (issue #639).
  *
- * Scope changes are security-relevant, so the entry captures the actor, the
- * affected key record, and the before/after scope state. The API-key secret
- * (and any signing material) is deliberately excluded from this shape.
+ * Stored in `metadata` of the parent AuditLog under key `jobEnqueueDecision`.
+ * Captures both the dedupe inputs (operation, resource, parameter hash) and the
+ * outcome (which job run was used and whether an existing run was reused), so
+ * that dedupe decisions are auditable and different parameters are never
+ * silently conflated.
  */
-export interface ApiKeyScopeChangeAuditEntry {
-  /** Identity of the actor who attempted the change (API key id, fallback to X-Admin-Actor header). */
-  actor: string;
-  /** Identifier of the API-key record whose scopes were changed. Never the secret. */
-  keyId: string;
-  /** Scopes assigned to the key before the change. */
-  previousScopes: string[];
-  /** Scopes assigned to the key after the change (unchanged from previous on failure). */
-  newScopes: string[];
-  /** Whether the scope mutation was authorized and applied. */
-  outcome: ApiKeyScopeChangeOutcome;
-  /** Reason the attempt failed, when `outcome` is `failure`. */
-  failureReason?: string;
-  /** Client IP address. */
-  ip: string | undefined;
-  /** User-Agent header. */
-  userAgent: string | undefined;
+export interface JobEnqueueDecisionAuditEntry {
+  /** Background-job operation that was requested (e.g. `reconcile`, `cleanup`). */
+  operation: string;
+  /** Resource the operation targets (e.g. a tenant, account, or entity id). */
+  resource: string;
+  /**
+   * Stable hash of the normalized request parameters. Two requests with the
+   * same operation/resource but different parameters produce different hashes
+   * and are therefore not conflated.
+   */
+  parameterHash: string;
+  /** Identifier of the background-job run associated with the decision. */
+  jobId: string;
+  /**
+   * `true` when an existing active run was returned instead of starting a new
+   * one; `false` when a new run was enqueued.
+   */
+  reused: boolean;
 }
