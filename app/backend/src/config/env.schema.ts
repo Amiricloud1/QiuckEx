@@ -543,6 +543,37 @@ export const envSchema = Joi.object({
     .description(
       "Compatibility gate enforcement mode: 'enforce' blocks incompatible changes, 'warn' logs only, 'off' disables the gate",
     ),
+
+  // ── Background Job Retention ───────────────────────────────────────────
+  JOB_RETENTION_DAYS: Joi.number()
+    .integer()
+    .min(1)
+    .default(30)
+    .description(
+      "Retention window in days for completed (terminal) background job records. " +
+        "Jobs older than this are removed by the bounded, paginated cleanup; " +
+        "active jobs and audit-required records are always preserved.",
+    ),
+  JOB_RETENTION_CLEANUP_BATCH_SIZE: Joi.number()
+    .integer()
+    .min(1)
+    .max(1000)
+    .default(100)
+    .description(
+      "Maximum number of terminal job records deleted per cleanup page. " +
+        "Cleanup is idempotent and paginated so large backlogs are drained in bounded batches.",
+    ),
+
+  // ── Webhook Payload Limits ─────────────────────────────────────────────
+  WEBHOOK_MAX_PAYLOAD_BYTES: Joi.number()
+    .integer()
+    .min(1)
+    .default(262144)
+    .description(
+      "Maximum serialized size in bytes of a webhook event payload. " +
+        "Events exceeding this bound are rejected before enqueue (never partially sent) " +
+        "and surface a stable, observable oversized-payload failure.",
+    ),
 });
 
 /**
@@ -632,4 +663,7 @@ export interface EnvConfig {
   COMPATIBILITY_BASELINE_PATH?: string;
   COMPATIBILITY_OVERRIDE_ALLOWLIST?: string;
   COMPATIBILITY_GATE_MODE: "enforce" | "warn" | "off";
+  JOB_RETENTION_DAYS: number;
+  JOB_RETENTION_CLEANUP_BATCH_SIZE: number;
+  WEBHOOK_MAX_PAYLOAD_BYTES: number;
 }

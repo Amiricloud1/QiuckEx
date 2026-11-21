@@ -9,101 +9,21 @@ import {
 import { PrivacyService } from '../privacy/privacy.service';
 
 /**
- * Canonical receipt statuses ordered from earliest to latest.
- * A receipt may only move forward through this ordering; a late or
- * duplicated chain event must never regress the persisted state.
+ * Canonical asset identity.
+ *
+ * Asset codes alone are ambiguous: two assets may share the same code but be
+ * issued by different accounts. Persistence and validation therefore key on the
+ * full identity tuple (network, asset type, code, issuer). The native asset is
+ * always represented as `{ network, type: 'native', code: 'XLM', issuer: null }`.
  */
-export const RECEIPT_STATUS_ORDER = [
-  'pending',
-  'submitted',
-  'confirmed',
-  'settled',
-  'failed',
-  'expired',
-] as const;
-
-export type ReceiptStatus = (typeof RECEIPT_STATUS_ORDER)[number];
-
-/** Terminal statuses cannot be superseded by any later observation. */
-const TERMINAL_RECEIPT_STATUSES: ReadonlySet<ReceiptStatus> = new Set<ReceiptStatus>([
-  'settled',
-  'failed',
-  'expired',
-]);
-
-export interface ReceiptTransitionResult {
-  /** The status that should be persisted as canonical state. */
-  status: ReceiptStatus;
-  /** True when the incoming observation was applied to canonical state. */
-  applied: boolean;
-  /** True when the incoming observation matched the current status exactly. */
-  duplicate: boolean;
-  /** True when the incoming observation would have regressed canonical state. */
-  conflict: boolean;
-  /** The status the caller attempted to apply (retained as conflict evidence). */
-  observedStatus: ReceiptStatus;
-  /** The canonical status before the observation was evaluated. */
-  previousStatus: ReceiptStatus;
+export interface AssetIdentity {
+  network: string;
+  type: 'native' | 'credit_alphanum4' | 'credit_alphanum12';
+  code: string;
+  issuer: string | null;
 }
 
-export class ReceiptTransitionConflictError extends Error {
-  constructor(
-    public readonly previousStatus: ReceiptStatus,
-    public readonly observedStatus: ReceiptStatus,
-  ) {
-    super(
-      `Receipt status transition from '${previousStatus}' to '${observedStatus}' is not allowed`,
-    );
-    this.name = 'ReceiptTransitionConflictError';
-  }
-}
-
-/**
- * Pure transition helper: given the current canonical status and an observed
- * status, decide whether the observation may be applied. Never throws; callers
- * receive the canonical status plus conflict evidence.
- */
-export function reconcileReceiptStatus(
-  current: ReceiptStatus,
-  observed: ReceiptStatus,
-): ReceiptTransitionResult {
-  const currentIndex = RECEIPT_STATUS_ORDER.indexOf(current);
-  const observedIndex = RECEIPT_STATUS_ORDER.indexOf(observed);
-
-  if (current === observed) {
-    return {
-      status: current,
-      applied: false,
-      duplicate: true,
-      conflict: false,
-      observedStatus: observed,
-      previousStatus: current,
-    };
-  }
-
-  const isTerminal = TERMINAL_RECEIPT_STATUSES.has(current);
-  const isForward = observedIndex > currentIndex;
-
-  if (!isTerminal && isForward) {
-    return {
-      status: observed,
-      applied: true,
-      duplicate: false,
-      conflict: false,
-      observedStatus: observed,
-      previousStatus: current,
-    };
-  }
-
-  return {
-    status: current,
-    applied: false,
-    duplicate: false,
-    conflict: true,
-    observedStatus: observed,
-    previousStatus: current,
-  };
-}
+export const DEFAULT_ASSET_NETWORK = 'public';
 
 @Injectable()
 export class LinksService {
@@ -185,7 +105,7 @@ export class LinksService {
     // Validate and normalise acceptedAssets
     const acceptedAssets = this.validateAcceptedAssets(
       request.acceptedAssets,
-      normalizedAsset,
+      asset,
     );
 
     const canonical = this.generateCanonicalFormat(
@@ -211,13 +131,15 @@ export class LinksService {
       normalized = true;
     }
 
-    if (normalizedAsset !== asset) {
-      warnings.push(`Asset symbol '${asset}' normalized to '${normalizedAsset}'`);
+    if (normalizedAsset !== (request.asset ?? LinkConstraints.ASSET.DEFAULT)) {
+      warnings.push(
+        `Asset symbol '${request.asset ?? LinkConstraints.ASSET.DEFAULT}' normalized to '${normalizedAsset}'`,
+      );
       normalized = true;
     }
 
     // Additional metadata fields for frontend
-    const additionalMetadata = this.deriveAdditionalMetadata(request, normalizedAsset);
+    const additionalMetadata = this.deriveAdditionalMetadata(request, asset);
     const stealthRecipientEnvelope =
       request.privacy &&
       request.recipientViewPublicKeyPem &&
@@ -246,15 +168,29 @@ export class LinksService {
       username,
       destination,
       referenceId,
-      acceptedAssets,
+      acceptedAssets: acceptedAssets
+        ? acceptedAssets.map((a) => this.serializeAssetIdentity(a))
+        : null,
       swapOptions,
       metadata: {
         normalized,
         warnings: warnings.length > 0 ? warnings : undefined,
         stealthRecipientEnvelope,
+        assetIdentity: this.serializeAssetIdentity(asset),
         ...additionalMetadata,
       },
     };
+  }
+
+  /**
+   * Serialize an identity to the canonical `NETWORK:CODE:ISSUER` form used in
+   * persistence and the canonical link format. Native assets omit the issuer.
+   */
+  private serializeAssetIdentity(identity: AssetIdentity): string {
+    if (identity.type === 'native') {
+      return identity.code;
+    }
+    return `${identity.network}:${identity.code}:${identity.issuer ?? ''}`;
   }
 
   private validateAmount(amount: number): string {
@@ -436,67 +372,148 @@ export class LinksService {
     return expiration;
   }
 
-  private validateAsset(asset?: string): AssetCode {
-    const assetCode = (asset || LinkConstraints.ASSET.DEFAULT) as AssetCode;
-
-    if (!LinkConstraints.ASSET.WHITELIST.includes(assetCode)) {
+  /**
+   * Parse an asset string into its canonical identity.
+   *
+   * Accepted forms:
+   * - `XLM` / `native` -> native asset (issuer null)
+   * - `CODE` -> whitelisted asset resolved to its canonical issuer
+   * - `CODE:ISSUER` -> explicit issuer, must match the canonical issuer for
+   *   whitelisted codes (prevents conflating same-code assets from other issuers)
+   * - `NETWORK:CODE` / `NETWORK:CODE:ISSUER` -> explicit network override
+   */
+  private parseAssetIdentity(
+    asset: string | undefined,
+    field: string = 'asset',
+  ): AssetIdentity {
+    const raw = (asset ?? LinkConstraints.ASSET.DEFAULT).trim();
+    if (raw === '') {
       throw new LinkValidationError(
         LinkErrorCode.ASSET_NOT_WHITELISTED,
         `Asset is not supported. Supported assets: ${LinkConstraints.ASSET.WHITELIST.join(', ')}`,
-        'asset',
+        field,
       );
     }
 
-    return assetCode;
+    const parts = raw.split(':').map((p) => p.trim());
+    let network = DEFAULT_ASSET_NETWORK;
+    let code: string;
+    let issuer: string | null = null;
+
+    if (parts.length === 1) {
+      code = parts[0];
+    } else if (parts.length === 2) {
+      // Either NETWORK:CODE or CODE:ISSUER
+      if (this.isKnownNetwork(parts[0])) {
+        network = parts[0];
+        code = parts[1];
+      } else {
+        code = parts[0];
+        issuer = parts[1];
+      }
+    } else if (parts.length === 3) {
+      network = parts[0];
+      code = parts[1];
+      issuer = parts[2];
+    } else {
+      throw new LinkValidationError(
+        LinkErrorCode.ASSET_NOT_WHITELISTED,
+        `Invalid asset identifier '${raw}'`,
+        field,
+      );
+    }
+
+    if (code.toUpperCase() === 'XLM' || code.toLowerCase() === 'native') {
+      if (issuer) {
+        throw new LinkValidationError(
+          LinkErrorCode.ASSET_NOT_WHITELISTED,
+          'Native asset XLM cannot have an issuer',
+          field,
+        );
+      }
+      return { network, type: 'native', code: 'XLM', issuer: null };
+    }
+
+    if (!LinkConstraints.ASSET.WHITELIST.includes(code as AssetCode)) {
+      throw new LinkValidationError(
+        LinkErrorCode.ASSET_NOT_WHITELISTED,
+        `Asset is not supported. Supported assets: ${LinkConstraints.ASSET.WHITELIST.join(', ')}`,
+        field,
+      );
+    }
+
+    const canonicalIssuer = this.getAssetIssuer(code);
+    if (issuer && canonicalIssuer && issuer !== canonicalIssuer) {
+      throw new LinkValidationError(
+        LinkErrorCode.ASSET_NOT_WHITELISTED,
+        `Asset '${code}' is not supported for issuer '${issuer}'`,
+        field,
+      );
+    }
+
+    return {
+      network,
+      type: code.length <= 4 ? 'credit_alphanum4' : 'credit_alphanum12',
+      code,
+      issuer: issuer ?? canonicalIssuer,
+    };
   }
 
-  private normalizeAssetSymbol(asset: string): string {
-    const normalized: Record<string, string> = {
-      XLM: 'XLM',
-      USDC: 'USDC',
-      AQUA: 'AQUA',
-      yXLM: 'yXLM',
-    };
+  private isKnownNetwork(value: string): boolean {
+    return ['public', 'testnet', 'futurenet'].includes(value.toLowerCase());
+  }
 
-    return normalized[asset] || asset;
+  private assetIdentityKey(identity: AssetIdentity): string {
+    return [
+      identity.network,
+      identity.type,
+      identity.code,
+      identity.issuer ?? '',
+    ].join(':');
+  }
+
+  private validateAsset(asset?: string): AssetIdentity {
+    return this.parseAssetIdentity(asset, 'asset');
+  }
+
+  private normalizeAssetSymbol(asset: AssetIdentity): string {
+    return asset.code;
   }
 
   private validateAcceptedAssets(
     assets: string[] | undefined,
-    destinationAsset: string,
-  ): string[] | null {
+    destinationAsset: AssetIdentity,
+  ): AssetIdentity[] | null {
     if (!assets || assets.length === 0) {
       return null;
     }
 
-    const invalid = assets.filter(
-      (a) => !LinkConstraints.ASSET.WHITELIST.includes(a as AssetCode),
+    const identities = assets.map((a) =>
+      this.parseAssetIdentity(a, 'acceptedAssets'),
     );
-    if (invalid.length > 0) {
-      throw new LinkValidationError(
-        LinkErrorCode.ASSET_NOT_WHITELISTED,
-        `Unsupported asset(s) in acceptedAssets: ${invalid.join(', ')}`,
-        'acceptedAssets',
-      );
-    }
 
-    // Ensure the destination asset is always included
-    const unique = Array.from(new Set([...assets, destinationAsset]));
-    return unique;
+    // Ensure the destination asset is always included, deduplicating on the
+    // full identity so same-code assets from different issuers stay distinct.
+    const byKey = new Map<string, AssetIdentity>();
+    for (const identity of [...identities, destinationAsset]) {
+      byKey.set(this.assetIdentityKey(identity), identity);
+    }
+    return Array.from(byKey.values());
   }
 
   private async buildSwapOptions(
     destinationAmount: string,
-    destinationAsset: string,
-    acceptedAssets: string[],
+    destinationAsset: AssetIdentity,
+    acceptedAssets: AssetIdentity[],
   ): Promise<PathPreviewRow[]> {
     if (!this.pathPreviewService) {
       return [];
     }
 
+    const destinationKey = this.assetIdentityKey(destinationAsset);
     const swapSourceAssets = acceptedAssets
-      .filter((a) => a !== destinationAsset)
-      .map((code) => ({ code }));
+      .filter((a) => this.assetIdentityKey(a) !== destinationKey)
+      .map((a) => ({ code: a.code, issuer: a.issuer ?? undefined }));
 
     if (swapSourceAssets.length === 0) {
       return [];
@@ -505,7 +522,10 @@ export class LinksService {
     try {
       const result = await this.pathPreviewService.previewPaths({
         destinationAmount,
-        destinationAsset: { code: destinationAsset },
+        destinationAsset: {
+          code: destinationAsset.code,
+          issuer: destinationAsset.issuer ?? undefined,
+        },
         sourceAssets: swapSourceAssets,
       });
       return result.paths;
@@ -525,7 +545,7 @@ export class LinksService {
     username?: string | null,
     destination?: string | null,
     referenceId?: string | null,
-    acceptedAssets?: string[] | null,
+    acceptedAssets?: AssetIdentity[] | null,
   ): string {
     const params = new URLSearchParams();
     params.set('amount', amount);
@@ -536,23 +556,22 @@ export class LinksService {
     if (destination) params.set('destination', destination);
     if (referenceId) params.set('ref', referenceId);
     if (acceptedAssets && acceptedAssets.length > 0) {
-      params.set('acceptedAssets', acceptedAssets.join(','));
+      params.set(
+        'acceptedAssets',
+        acceptedAssets.map((a) => this.serializeAssetIdentity(a)).join(','),
+      );
     }
 
     return params.toString();
   }
 
-  private deriveAdditionalMetadata(request: LinkMetadataRequestDto, asset: string): Record<string, unknown> {
+  private deriveAdditionalMetadata(request: LinkMetadataRequestDto, asset: AssetIdentity): Record<string, unknown> {
     const metadata: Record<string, unknown> = {};
 
-    // Asset type and issuer
-    if (asset === 'XLM') {
-      metadata.assetType = 'native';
-      metadata.assetIssuer = null;
-    } else {
-      metadata.assetType = 'credit_alphanum4';
-      metadata.assetIssuer = this.getAssetIssuer(asset);
-    }
+    // Asset type and issuer, derived from the canonical identity
+    metadata.assetType = asset.type;
+    metadata.assetIssuer = asset.issuer;
+    metadata.assetNetwork = asset.network;
 
     // Link type classification
     if (request.privacy) {
@@ -575,8 +594,8 @@ export class LinksService {
     metadata.securityLevel = this.calculateSecurityLevel(request);
 
     // Currency display info
-    metadata.currencySymbol = this.getCurrencySymbol(asset);
-    metadata.trustScore = this.getTrustScore(asset);
+    metadata.currencySymbol = this.getCurrencySymbol(asset.code);
+    metadata.trustScore = this.getTrustScore(asset.code);
 
     return metadata;
   }
