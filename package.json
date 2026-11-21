@@ -8,6 +8,7 @@
     "lint": "turbo run lint",
     "type-check": "turbo run type-check",
     "test": "turbo run test",
+    "test:frontend:unit": "pnpm --filter frontend run test:unit",
     "test:mutation": "pnpm --filter @quickex/backend run test:mutation",
     "db:migrate": "pnpm --filter @quickex/backend run db:migrate",
     "db:rollback": "bash scripts/rollback-migration.sh",
