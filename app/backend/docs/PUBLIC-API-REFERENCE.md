@@ -10,6 +10,25 @@ Authorization: Bearer <access_token>
 
 ---
 
+## Pause policy
+
+QuickEx supports a global pause and per-feature pauses (for example, webhook delivery). The pause policy is documented here so that clients can reason about which entry points are affected.
+
+| Entry point | Type | Behavior while paused |
+| --- | --- | --- |
+| `POST /webhooks` | mutation | Rejected with `503 Service Unavailable` before any state is written. |
+| `DELETE /webhooks/:id` | mutation | Rejected with `503 Service Unavailable` before any state is written. |
+| `GET /webhooks` | read | Allowed; returns the existing registrations unchanged. |
+| Webhook delivery | outbound | Suspended while paused; queued deliveries resume after unpause. |
+
+Rules:
+
+- Blocked mutations fail **before** any state mutation occurs; no partial writes are persisted.
+- Safe reads remain available under an active pause and reflect the last committed state.
+- Emergency semantics (signature verification, retry/backoff, delivery logging) are unchanged by pausing.
+
+---
+
 ## Webhooks
 
 Register a webhook URL to receive a `POST` request whenever a payment to one of your QuickEx links is confirmed on the Stellar network.
@@ -41,6 +60,8 @@ Response `201 Created`:
 }
 ```
 
+When the webhook feature is paused, this endpoint responds with `503 Service Unavailable` and no webhook is created.
+
 ### List webhooks
 
 `GET /webhooks`
@@ -60,11 +81,15 @@ Response `200 OK`:
 ]
 ```
 
+This read remains available while paused.
+
 ### Delete a webhook
 
 `DELETE /webhooks/:id`
 
 Response `204 No Content`.
+
+When the webhook feature is paused, this endpoint responds with `503 Service Unavailable` and the webhook is left untouched.
 
 ---
 
@@ -96,6 +121,7 @@ Deliveries are sent as `POST` requests with `Content-Type: application/json`.
 - A delivery is considered successful when your endpoint responds with a `2xx` status code.
 - Failed deliveries are retried with exponential backoff: up to **5 retries over 24 hours**.
 - Each attempt is logged (timestamp, status code, response snippet) and can be inspected via the delivery log.
+- While the webhook feature is paused, new deliveries are suspended and resume after unpause; retry/backoff and logging semantics are unchanged.
 
 ### Signature verification
 
