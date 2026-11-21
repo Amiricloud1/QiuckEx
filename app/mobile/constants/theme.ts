@@ -56,6 +56,30 @@ export const Colors = {
   },
 };
 
+/**
+ * Minimum interactive target size and spacing for dense screens (issue #604).
+ *
+ * `minSize` follows the project accessibility standard (44x44 logical pixels,
+ * matching WCAG 2.5.5 / Apple HIG). `rowGap` is the minimum vertical spacing
+ * between adjacent interactive rows, and `hitSlop` expands small controls
+ * (toggles, copy buttons, row actions) without visually enlarging them or
+ * hiding secondary information.
+ */
+export const touchTarget = {
+  minSize: 44,
+  rowGap: 12,
+  hitSlop: 8,
+} as const;
+
+/**
+ * Returns the minimum size style for an interactive target. Apply to toggles,
+ * copy buttons, and row actions so zoomed layouts do not create overlapping
+ * actions.
+ */
+export function touchTargetStyle(): { minWidth: number; minHeight: number } {
+  return { minWidth: touchTarget.minSize, minHeight: touchTarget.minSize };
+}
+
 export const Fonts = Platform.select({
   ios: {
     /** iOS `UIFontDescriptorSystemDesignDefault` */
