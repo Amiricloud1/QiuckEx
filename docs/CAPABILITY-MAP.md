@@ -137,7 +137,7 @@ Expo/React Native app, 25 screens in `app/mobile/app`. ⚠️ All "Live" rows ar
 | Flow | Owning module | Status | Notes |
 |---|---|---|---|
 | Transaction history | `services/transactions.ts` → backend `transactions` | **Live** | Real Horizon-backed data. |
-| Link creation & asset picker | `services/link-metadata.ts`, `app/link-generator.tsx` → backend `links`, `stellar` | **Live** | Same contracts as frontend. On testnet, saved merchant preferences for the destination wallet default new links; existing links are unchanged. |
+| Link creation & asset picker | `services/link-metadata.ts`, `app/link-generator.tsx` → backend `links`, `stellar` | **Live** | Same contracts as frontend, including the optional `Idempotency-Key` replay and concurrent-request coalescing. The generator screen uses a single-flight guard so a second tap cannot start a duplicate request, and form values survive a failed request. On testnet, saved merchant preferences for the destination wallet default new links; existing links are unchanged. |
 | In-app notification center | `services/in-app-notifications.ts` → backend `notifications` | **Live** | Defensively handles two response shapes (mismatch #8). |
 | Local notification store | `services/notifications.ts` | **Partial** | Real API when online with a wallet session; seeds `MOCK_NOTIFICATIONS` on offline/error/no-session paths. |
 | Escrow confirmation (contract registry sync) | `app/payment-confirmation.tsx`, `services/contract-registry.ts` | **Partial** | **Broken today**: calls `/api/contracts/registry` but the backend serves `/contracts/registry` — every sync 404s (mismatch #1, highest-value small fix). |
