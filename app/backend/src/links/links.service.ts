@@ -34,6 +34,57 @@ export class LinksService {
     @Optional() private readonly privacyService?: PrivacyService,
   ) {}
 
+  /**
+   * Reconcile an observed receipt status against the canonical status at the
+   * service boundary. Out-of-order observations cannot regress canonical state;
+   * conflicts are surfaced as a typed result and logged without personal data.
+   */
+  reconcileReceiptStatus(
+    current: ReceiptStatus,
+    observed: ReceiptStatus,
+    referenceId?: string | null,
+  ): ReceiptTransitionResult {
+    const result = reconcileReceiptStatus(current, observed);
+
+    if (result.conflict) {
+      this.logger.warn(
+        `Receipt status conflict: observed '${result.observedStatus}' would regress canonical '${result.previousStatus}'` +
+          (referenceId ? ` (ref: ${this.maskReferenceId(referenceId)})` : ''),
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Apply an observed receipt status, throwing a typed error on conflict.
+   * Duplicate observations are idempotent and return the canonical status.
+   */
+  applyReceiptStatus(
+    current: ReceiptStatus,
+    observed: ReceiptStatus,
+    referenceId?: string | null,
+  ): ReceiptStatus {
+    const result = this.reconcileReceiptStatus(current, observed, referenceId);
+
+    if (result.conflict) {
+      throw new ReceiptTransitionConflictError(
+        result.previousStatus,
+        result.observedStatus,
+      );
+    }
+
+    return result.status;
+  }
+
+  private maskReferenceId(referenceId: string): string {
+    const trimmed = referenceId.trim();
+    if (trimmed.length <= 4) {
+      return '****';
+    }
+    return `${trimmed.slice(0, 2)}***${trimmed.slice(-2)}`;
+  }
+
   async generateMetadata(request: LinkMetadataRequestDto): Promise<LinkMetadataResponseDto> {
     const amt = this.validateAmount(request.amount);
 
