@@ -161,6 +161,34 @@ def quickex_hook():
 
 ---
 
+## Fees
+
+Fees are charged in **basis points** (bps) of the settled amount, where `1 bps = 0.01%` (i.e. `fee = amount * bps / 10_000`).
+
+### Rounding direction
+
+All fee arithmetic is performed on **integer minor units** of the asset (stroops for `XLM`, the asset's smallest indivisible unit otherwise). The fee is computed with **integer division that rounds down (floor)** toward zero:
+
+```
+fee_minor = floor(amount_minor * fee_bps / 10_000)
+recipient_minor = amount_minor - fee_minor
+```
+
+Consequences at the smallest supported amounts:
+
+- A fee that would be a fractional minor unit rounds **down**, so it may be `0` for very small deposits. A zero fee is valid and the recipient receives the full amount.
+- Rounding down guarantees `fee_minor + recipient_minor == amount_minor` exactly — the deposit is always conserved and no minor unit is created or lost.
+- The fee is additionally capped by the configured ceiling (`max_fee`); the applied fee is `min(floor(amount_minor * fee_bps / 10_000), max_fee_minor)`. The fee never exceeds the ceiling, and the recipient always receives `amount_minor - applied_fee`.
+
+### Representative precisions
+
+| Asset | Minor unit | Example smallest amount |
+| --- | --- | --- |
+| `XLM` | stroop (`1e-7`) | `0.0000001` |
+| `USDC` | `1e-7` (7 dp) | `0.0000001` |
+
+---
+
 ## Transaction detail
 
 Transaction detail views present a fixed hierarchy so the actionable financial summary is read first and raw chain metadata is available on demand. The same hierarchy applies to both the **payer** and **recipient** perspectives; only the counterpart label changes.

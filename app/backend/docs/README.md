@@ -43,6 +43,26 @@ The QuickEx backend is a NestJS-based application that provides a comprehensive 
   - Address validation and conversion
   - Event type classification
 
+## Fee Calculation and Rounding
+
+Basis-point fees are computed with integer arithmetic on the asset's smallest supported unit (stroops for XLM, the asset's base unit for issued assets). No floating point is used.
+
+### Rounding direction
+- The fee is rounded **down** (floor) to the nearest integer base unit: `fee = floor(amount * feeBps / 10_000)`.
+- The recipient amount is the remainder: `recipient = amount - fee`.
+- This guarantees `fee + recipient === amount` for every deposit, so value is conserved exactly.
+- At the smallest supported amounts the fee may round to `0`; the recipient still receives the full deposit. The fee never rounds up to consume the full amount.
+
+### Fee ceilings
+- The computed fee is clamped to the configured maximum fee. If the ceiling is lower than the floored fee, the ceiling is used and the remainder goes to the recipient.
+- The fee never exceeds the configured ceiling, and the recipient amount is never negative.
+
+### Tested boundaries
+Automated tests cover representative asset precisions (including the smallest supported amounts) and fee limits, asserting that:
+- `fee + recipient === deposit` for all cases.
+- `fee <= configured ceiling`.
+- Small deposits round the fee down to `0` rather than consuming the deposit.
+
 ## Transaction Detail Hierarchy
 
 Transaction detail responses are ordered so that the actionable financial summary is presented before raw chain metadata. This applies equally to the payer and recipient views.
@@ -227,38 +247,4 @@ npm run start
 #### Identifying Slow External Dependencies
 1. Query `external_call_duration_seconds` by service label
 2. High latency on `horizon` operations indicates network issues
-3. High latency on `webhook` operations indicates endpoint issues
-4. Check `error_total` metric for error types by service
-
-### Reconciliation
-
-#### Manual Reconciliation Trigger
-```bash
-# Trigger reconciliation run
-curl -X POST http://localhost:4000/reconciliation/trigger
-
-# Check reconciliation status
-curl http://localhost:4000/reconciliation/status
-```
-
-#### Interpreting Reconciliation Reports
-- `processed` - Total records checked
-- `updated` - Records updated to match on-chain state
-- `noOp` - Records already consistent with on-chain state
-- `skipped` - Records skipped due to Horizon unavailability
-- `irreconcilable` - Records requiring manual review
-
-#### Handling Irreconcilable Records
-1. Check logs for `IRRECONCILABLE` error messages
-2. Verify on-chain state using Stellar expert or Horizon directly
-3. For escrows: Check if account exists, balance, and expiry
-4. For payments: Verify transaction hash on-chain
-5. Manual database update may be required after verification
-
-#### Backfill Operations
-```bash
-# Trigger backfill for specific ledger range
-curl -X POST http://localhost:4000/reconciliation/backfill \
-  -H "Content-Type: application/json" \
-  -d '{"startLedger": 1000, "endLedger": 2000}'
-```
+3. High latency on `w
