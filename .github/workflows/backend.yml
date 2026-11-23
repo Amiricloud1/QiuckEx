@@ -96,7 +96,7 @@ jobs:
           name: backend-unit-coverage
           path: app/backend/coverage
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
       - name: Run Integration Tests with Coverage
         run: pnpm run test:int:coverage
@@ -113,7 +113,7 @@ jobs:
           name: backend-integration-coverage
           path: app/backend/coverage
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
       - name: Run Fuzz Tests
         run: pnpm run test:fuzz:ci

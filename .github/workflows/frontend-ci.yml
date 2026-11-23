@@ -83,4 +83,4 @@ jobs:
             app/frontend/visual/**/*-diff.png
             app/frontend/visual/**/*-actual.png
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7

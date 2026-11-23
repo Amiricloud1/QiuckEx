@@ -130,7 +130,7 @@ jobs:
           name: rc-validation-${{ github.run_id }}
           path: |
             /tmp/rc-*.log
-          retention-days: 14
+          retention-days: 90
           if-no-files-found: ignore
 
   load-test:
@@ -162,3 +162,4 @@ jobs:
           name: k6-summary-${{ github.run_id }}
           path: k6-summary.json
           if-no-files-found: ignore
+          retention-days: 90
