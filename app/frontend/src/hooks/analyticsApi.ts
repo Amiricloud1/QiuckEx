@@ -65,11 +65,53 @@ type ApiReport = {
   timeSeries: ApiTimeSeriesItem[];
 };
 
-const analyticsCache: Partial<Record<DateRange, AnalyticsData>> = {};
+interface AnalyticsCacheEntry {
+  data: AnalyticsData;
+  fetchedAt: number;
+  failed: boolean;
+}
+
+/** Freshness metadata for the most recent `fetchAnalytics` call per range. */
+export interface AnalyticsFreshness {
+  /** When this data was actually retrieved from (or failed against) the backend. */
+  fetchedAt: number;
+  /** True when this call returned a previously-cached value instead of hitting the network. */
+  cached: boolean;
+  /** True when the underlying network call failed and this is fallback/empty data. */
+  failed: boolean;
+}
+
+const analyticsCache: Partial<Record<DateRange, AnalyticsCacheEntry>> = {};
+const lastFreshness: Partial<Record<DateRange, AnalyticsFreshness>> = {};
 const ASSET_COLORS: Record<string, string> = {
   USDC: "#6366f1",
   XLM: "#8b5cf6",
 };
+
+/**
+ * Freshness metadata (retrieval time, cached/failed) for the last
+ * `fetchAnalytics` call for a given range. Lets callers show "as of HH:MM"
+ * and distinguish a cached/fallback value from a just-fetched live one.
+ */
+export function getAnalyticsFreshness(range: DateRange): AnalyticsFreshness | undefined {
+  return lastFreshness[range];
+}
+
+/**
+ * Drop cached analytics data so the next `fetchAnalytics` call hits the
+ * network again. Call this when something changed upstream (a realtime
+ * update event, a new payment) instead of relying on the in-memory cache
+ * forever, which would otherwise keep serving the same snapshot.
+ */
+export function invalidateAnalyticsCache(range?: DateRange): void {
+  if (range) {
+    delete analyticsCache[range];
+  } else {
+    for (const key of Object.keys(analyticsCache) as DateRange[]) {
+      delete analyticsCache[key];
+    }
+  }
+}
 
 function rangeToWindow(range: DateRange): {
   startDate: string;
@@ -187,8 +229,14 @@ function fallbackEmpty(): AnalyticsData {
 }
 
 export async function fetchAnalytics(range: DateRange): Promise<AnalyticsData> {
-  if (analyticsCache[range]) {
-    return Promise.resolve(analyticsCache[range] as AnalyticsData);
+  const cachedEntry = analyticsCache[range];
+  if (cachedEntry) {
+    lastFreshness[range] = {
+      fetchedAt: cachedEntry.fetchedAt,
+      cached: true,
+      failed: cachedEntry.failed,
+    };
+    return cachedEntry.data;
   }
 
   const publicKey = resolvePublicKey();
@@ -206,12 +254,16 @@ export async function fetchAnalytics(range: DateRange): Promise<AnalyticsData> {
     }
     const report = (await res.json()) as ApiReport;
     const parsed = toUiModel(report);
-    analyticsCache[range] = parsed;
+    const fetchedAt = Date.now();
+    analyticsCache[range] = { data: parsed, fetchedAt, failed: false };
+    lastFreshness[range] = { fetchedAt, cached: false, failed: false };
     return parsed;
   } catch (error) {
     console.warn("Falling back to empty analytics data:", error);
     const empty = fallbackEmpty();
-    analyticsCache[range] = empty;
+    const fetchedAt = Date.now();
+    analyticsCache[range] = { data: empty, fetchedAt, failed: true };
+    lastFreshness[range] = { fetchedAt, cached: false, failed: true };
     return empty;
   }
 }

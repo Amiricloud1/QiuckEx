@@ -5,7 +5,13 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AnalyticsDashboard from "@/components/AnalyticsDashboard";
 import { NetworkBadge } from "@/components/NetworkBadge";
-import { fetchAnalytics, type AnalyticsData } from "@/hooks/analyticsApi";
+import {
+  fetchAnalytics,
+  getAnalyticsFreshness,
+  invalidateAnalyticsCache,
+  type AnalyticsData,
+  type AnalyticsFreshness,
+} from "@/hooks/analyticsApi";
 import {
   fetchUserBids,
   fetchUserListings,
@@ -16,6 +22,8 @@ import {
 import {
   appendUniqueActivityItems,
   fetchActivityFeed,
+  loadActivityFeedCursor,
+  saveActivityFeedCursor,
   type ActivityFeedResponse,
 } from "@/hooks/activityFeedApi";
 import {
@@ -73,7 +81,36 @@ function DashboardContent() {
     setLoading(true);
     setError(null);
     try {
-      const refreshed = await fetchActivityFeed(20);
+      let refreshed = await fetchActivityFeed(20);
+
+      if (!refreshed.degraded) {
+        // If the user had previously paginated further than the first page for
+        // this same account + network, catch the feed back up to that point so
+        // a refresh/tab-restore doesn't look like it "restarted from the
+        // beginning" or surface rows the user has already scrolled past.
+        const restoredCursor = loadActivityFeedCursor();
+        if (restoredCursor && restoredCursor !== refreshed.nextCursor) {
+          let current = refreshed;
+          let guard = 0;
+          const MAX_AUTO_PAGES = 25;
+          while (
+            current.nextCursor &&
+            current.nextCursor !== restoredCursor &&
+            guard < MAX_AUTO_PAGES
+          ) {
+            const next = await fetchActivityFeed(20, current.nextCursor);
+            if (next.degraded) break;
+            current = {
+              ...next,
+              items: appendUniqueActivityItems(current.items, next.items),
+            };
+            guard += 1;
+          }
+          refreshed = current;
+        }
+        saveActivityFeedCursor(refreshed.nextCursor);
+      }
+
       setData((current) =>
         refreshed.degraded && current
           ? { ...current, degraded: true, error: refreshed.error }
@@ -87,6 +124,7 @@ function DashboardContent() {
   }, []);
 
   const [metricsData, setMetricsData] = useState<AnalyticsData | null>(null);
+  const [metricsFreshness, setMetricsFreshness] = useState<AnalyticsFreshness | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [activityFilters, setActivityFilters] = useState<ActivityFilterState>({
@@ -95,12 +133,16 @@ function DashboardContent() {
     asset: "All",
   });
 
-  const loadMetrics = useCallback(async () => {
+  const loadMetrics = useCallback(async (opts?: { forceRefresh?: boolean }) => {
     setMetricsLoading(true);
     setMetricsError(null);
     try {
+      if (opts?.forceRefresh) {
+        invalidateAnalyticsCache("30d");
+      }
       const data = await fetchAnalytics("30d");
       setMetricsData(data);
+      setMetricsFreshness(getAnalyticsFreshness("30d") ?? null);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to load backend metrics";
       setMetricsError(message);
@@ -125,7 +167,7 @@ function DashboardContent() {
         event.type === "activity_feed_cleared"
       ) {
         void refreshActivity();
-        void loadMetrics();
+        void loadMetrics({ forceRefresh: true });
       }
     });
     return () => unsubscribe();
@@ -240,11 +282,15 @@ function DashboardContent() {
     setLoadingMore(true);
     try {
       const nextPage = await fetchActivityFeed(20, previousData.nextCursor);
-      setData({
+      const merged = {
         ...nextPage,
         items: appendUniqueActivityItems(previousData.items, nextPage.items),
         nextCursor: nextPage.degraded ? previousData.nextCursor : nextPage.nextCursor,
-      });
+      };
+      setData(merged);
+      if (!nextPage.degraded) {
+        saveActivityFeedCursor(merged.nextCursor);
+      }
     } finally {
       setLoadingMore(false);
     }
@@ -435,12 +481,28 @@ function DashboardContent() {
                   <p className="text-4xl font-semibold text-foreground">
                     {formatCurrency(metricsData?.summary.totalVolume ?? 0)}
                   </p>
-                  <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-xs font-semibold text-success">
-                    Live Backend Data
-                  </span>
+                  {metricsFreshness?.failed ? (
+                    <span className="rounded-full bg-danger/10 px-2 py-1 text-xs font-semibold text-danger">
+                      Unavailable
+                    </span>
+                  ) : metricsFreshness?.cached ? (
+                    <span className="rounded-full bg-amber-400/10 px-2 py-1 text-xs font-semibold text-amber-500">
+                      Cached
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-xs font-semibold text-success">
+                      Live Backend Data
+                    </span>
+                  )}
                 </div>
                 <p className="mt-2 text-xs text-subtle">
                   Avg tx size: {formatCurrency(metricsData?.summary.avgTxSize ?? 0)}
+                  {metricsFreshness ? (
+                    <>
+                      {" "}
+                      · As of {new Date(metricsFreshness.fetchedAt).toLocaleTimeString()}
+                    </>
+                  ) : null}
                 </p>
               </div>
 

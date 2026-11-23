@@ -104,6 +104,13 @@ type ComposeError = {
   error?: string;
 };
 
+type BulkRejectedRow = {
+  row: number;
+  field: string;
+  code: string;
+  message: string;
+};
+
 type BulkGenerateSuccess = {
   success: boolean;
   total: number;
@@ -117,6 +124,7 @@ type BulkGenerateSuccess = {
     destination?: string;
     referenceId?: string;
   }>;
+  rejected?: BulkRejectedRow[];
 };
 
 type BulkLinkRequestItem = {
@@ -197,6 +205,7 @@ export default function Generator() {
   const [bulkResult, setBulkResult] = useState<BulkGenerateSuccess | null>(null);
   const [bulkProgress, setBulkProgress] = useState(0);
   const [bulkSource, setBulkSource] = useState<"directory" | "csv" | null>(null);
+  const [bulkSourceRows, setBulkSourceRows] = useState<number[]>([]);
   const [csvDragActive, setCsvDragActive] = useState(false);
   const [csvFileName, setCsvFileName] = useState("");
   const [csvFileErrors, setCsvFileErrors] = useState<string[]>([]);
@@ -899,11 +908,13 @@ export default function Generator() {
     async (
       linksPayload: BulkLinkRequestItem[],
       source: "directory" | "csv",
+      sourceRows?: number[],
     ) => {
       setBulkLoading(true);
       setBulkError(null);
       setBulkResult(null);
       setBulkSource(source);
+      setBulkSourceRows(sourceRows ?? []);
       setBulkProgress(6);
 
       const progressTimer = window.setInterval(() => {
@@ -1039,6 +1050,7 @@ export default function Generator() {
     await submitBulkLinks(
       validCsvRows.map((row) => toBulkLinkPayloadFromCsvRow(row)),
       "csv",
+      validCsvRows.map((row) => row.sourceRow),
     );
   };
 
@@ -1864,10 +1876,15 @@ export default function Generator() {
             {bulkResult && bulkSource === "csv" && (
               <div className="mt-8 rounded-[32px] border border-emerald-300/25 bg-success-soft p-6">
                 <p className="text-xs font-black uppercase tracking-widest text-success">
-                  Batch Success
+                  {bulkResult.rejected && bulkResult.rejected.length > 0
+                    ? "Batch Completed With Errors"
+                    : "Batch Success"}
                 </p>
                 <h4 className="mt-2 text-2xl font-black text-foreground">
                   {bulkResult.total} payment link{bulkResult.total === 1 ? "" : "s"} generated
+                  {bulkResult.rejected && bulkResult.rejected.length > 0
+                    ? `, ${bulkResult.rejected.length} row${bulkResult.rejected.length === 1 ? "" : "s"} rejected`
+                    : ""}
                 </h4>
                 <p className="mt-2 max-w-2xl text-sm text-success/80">
                   Review the exported CSV or copy individual links from the generated output panel below.
@@ -1894,6 +1911,33 @@ export default function Generator() {
                     Copy all links
                   </button>
                 </div>
+
+                {bulkResult.rejected && bulkResult.rejected.length > 0 && (
+                  <div className="mt-6 rounded-2xl border border-red-500/20 bg-background/40 p-4">
+                    <p className="text-xs font-black uppercase tracking-widest text-danger">
+                      Rejected rows ({bulkResult.rejected.length})
+                    </p>
+                    <ul className="mt-3 space-y-2">
+                      {bulkResult.rejected.map((rejection, idx) => {
+                        const sourceRow =
+                          bulkSourceRows[rejection.row - 1] ?? rejection.row;
+                        return (
+                          <li
+                            key={`${rejection.row}-${idx}`}
+                            className="rounded-xl bg-card px-3 py-2 text-xs text-foreground"
+                          >
+                            <span className="font-black">Row {sourceRow}</span>
+                            <span className="text-subtle"> · field "{rejection.field}"</span>
+                            <span className="ml-2 rounded-full bg-danger/10 px-2 py-0.5 font-mono text-[10px] text-danger">
+                              {rejection.code}
+                            </span>
+                            <p className="mt-1 text-subtle">{rejection.message}</p>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>
