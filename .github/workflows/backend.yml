@@ -142,6 +142,65 @@ jobs:
           ROTATION_DRY_RUN: "true"
           DEPLOY_CREDENTIAL_PLACEHOLDER: "dry-run-placeholder"
 
+  # Post-promotion smoke check (#566): runs after a successful promotion to
+  # production and exercises the public frontend and API entry points with
+  # bounded timeouts. It never submits financial transactions. A failure here
+  # fails the workflow, which triggers the documented rollback/escalation
+  # policy (see docs/operations/post-deploy-smoke-check.md).
+  post-deploy-smoke:
+    name: Post-Deploy Smoke Check
+    runs-on: ubuntu-latest
+    # Only run after a promotion to production (push to main). Pull requests
+    # and develop pushes never hit production URLs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-test
+    defaults:
+      run:
+        working-directory: app/backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Cache trust boundary (#565): this job runs on push to main only, so
+      # dependency caching is safe to enable.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: app/backend/pnpm-lock.yaml
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      # Runs the synthetic smoke check against the configured production URLs.
+      # Route-level results are written to smoke-report.json and uploaded as an
+      # artifact. The step exits non-zero on any failed route, failing the job
+      # and triggering rollback/escalation per documented policy.
+      - name: Run post-deploy smoke check
+        run: pnpm run smoke:post-deploy
+        env:
+          NODE_ENV: production
+          SMOKE_FRONTEND_URL: ${{ vars.SMOKE_FRONTEND_URL }}
+          SMOKE_API_URL: ${{ vars.SMOKE_API_URL }}
+          SMOKE_TIMEOUT_MS: "5000"
+          SMOKE_REPORT_PATH: smoke-report.json
+
+      - name: Upload smoke check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-smoke-report
+          path: app/backend/smoke-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   payment-lifecycle-integration:
     name: Payment Lifecycle Integration Tests
     runs-on: ubuntu-latest
