@@ -158,3 +158,69 @@ def quickex_hook():
     # handle event...
     return "ok", 200
 ```
+
+---
+
+## Contract upgrades
+
+Upgrade authorization is **single-use and artifact-bound**. An approval is only valid for the exact WASM hash and version it was issued for, and only within its approval window.
+
+### Request an upgrade approval
+
+`POST /admin/upgrades/authorize`
+
+Request body:
+
+```json
+{
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0",
+  "expires_at": "2024-01-01T01:00:00.000Z"
+}
+```
+
+- `wasm_hash` (required) — the exact artifact hash the approval is bound to.
+- `version` (required) — the target contract version the approval is bound to.
+- `expires_at` (required) — end of the approval window; the approval is rejected at or after this time.
+
+Response `201 Created`:
+
+```json
+{
+  "id": "up_01HXYZ...",
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0",
+  "expires_at": "2024-01-01T01:00:00.000Z",
+  "status": "pending"
+}
+```
+
+### Apply an upgrade
+
+`POST /admin/upgrades/:id/apply`
+
+Request body:
+
+```json
+{
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0"
+}
+```
+
+The supplied `wasm_hash` and `version` must match the values the approval was issued for. The approval is consumed on success and cannot be reused.
+
+Failure responses (no code or registry state is changed):
+
+| Status | Condition |
+| --- | --- |
+| `409 Conflict` | Approval already consumed (replay attempt). |
+| `410 Gone` | Approval window has expired. |
+| `422 Unprocessable Entity` | `wasm_hash` or `version` does not match the approved artifact. |
+| `409 Conflict` | Approval was cancelled. |
+
+### Cancel an upgrade approval
+
+`POST /admin/upgrades/:id/cancel`
+
+Response `204 No Content`. A cancelled approval can no longer be applied.

@@ -242,82 +242,33 @@ curl http://localhost:4000/reconciliation/status
 curl -X POST http://localhost:4000/reconciliation/backfill \
   -H "Content-Type: application/json" \
   -d '{"startLedger": 1000, "endLedger": 2000}'
-
-# Monitor backfill progress
-curl http://localhost:4000/reconciliation/backfill/status
 ```
 
-### Common Issues
+## Upgrade Authorization
 
-#### Ingestion Stream Stalled
-- Symptom: `ingestion_lag_seconds` increasing continuously
-- Resolution: Check Horizon API status, restart ingestion service
-- Prevention: Monitor lag metric, set up alerts at 60s threshold
+### Binding Rules
+Upgrade approvals are bound to the exact artifact they authorize. An approval record captures:
 
-#### High Webhook Failure Rate
-- Symptom: `webhook_retry_total` increasing, `error_total{service="webhook"}` high
-- Resolution: Check webhook URL accessibility, verify secret configuration
-- Prevention: Monitor webhook delivery logs, test endpoints before registration
+- `wasmHash` - The SHA-256 hash of the approved WASM artifact
+- `version` - The intended contract version
+- `windowStart` / `windowEnd` - The upgrade window during which the approval is valid
+- `status` - `pending`, `consumed`, `cancelled`, or `expired`
 
-#### Reconciliation Discrepancies
-- Symptom: High `irreconcilable` count in reconciliation report
-- Resolution: Manual review of flagged records, verify on-chain state
-- Prevention: Regular reconciliation runs, monitor Horizon API health
+An approval can only be consumed once, and only when the installed artifact's hash and version match the approved values and the current ledger time falls within the approval window.
 
-#### Horizon API Latency
-- Symptom: High `external_call_duration_seconds{service="horizon"}`
-- Resolution: Check Horizon status, consider failover to backup instance
-- Prevention: Implement failover logic, monitor Horizon response times
+### Replay Protection
+- **Changed artifact**: Installing a WASM whose hash differs from the approved `wasmHash` is rejected; the approval remains unconsumed and no code or registry state changes.
+- **Reuse**: A consumed approval cannot be replayed. Subsequent attempts fail with `UpgradeAuthorizationAlreadyConsumed` and leave code and registry state untouched.
+- **Expiry**: Attempts after `windowEnd` fail with `UpgradeAuthorizationExpired`; the approval transitions to `expired` without mutating code or registry state.
+- **Cancellation**: A cancelled approval cannot be consumed; attempts fail with `UpgradeAuthorizationCancelled`.
 
-## Security
+### Failure Semantics
+All replay, expiry, cancellation, and changed-artifact failures are atomic: the contract code hash, version, and registry entries are unchanged when the authorization check fails. Failures are surfaced as typed errors so callers can distinguish the cause.
 
-### Features
-- Helmet for security headers
-- CORS configuration
-- Input validation and sanitization
-- Environment variable validation
-
-### Best Practices
-- Principle of least privilege
-- Secure secret management
-- Regular dependency updates
-
-## Development
-
-### Getting Started
-```bash
-# Install dependencies
-npm install
-
-# Minimal local env required for boot
-export NETWORK=testnet
-export SUPABASE_URL=http://127.0.0.1:54321
-export SUPABASE_ANON_KEY=your_supabase_anon_key
-
-# Run development server
-npm run start:dev
-
-# Run linting
-npm run lint
-
-# Run type checking
-npm run type-check
-```
-
-### Code Style
-- ESLint configuration for consistent code style
-- Prettier for code formatting
-- TypeScript for type safety
-
-## Contributing
-
-### Guidelines
-- Follow existing code patterns and conventions
-- Write comprehensive tests for new features
-- Update documentation for API changes
-- Ensure all tests pass before submitting PRs
-
-### Git Workflow
-- Feature branches for new development
-- Pull requests for code review
-- Semantic versioning for releases
+### Test Coverage
+The upgrade authorization suite (`upgrade-authorization.*.spec.ts`) covers:
+- Successful install of the approved artifact within the window
+- Replay of a consumed approval
+- Expiry at and after `windowEnd`
+- Cancellation before consumption
+- Changed-artifact attempts (hash mismatch and version mismatch)
