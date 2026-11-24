@@ -89,6 +89,18 @@ pnpm labels:sync -- --prune # also delete labels not in the file
 `.github/workflows/sync-labels.yml` runs the same script daily and on any change to
 the file, so the repository and the file cannot drift apart silently.
 
+### CI job conventions
+
+Every job in `.github/workflows/*.yml` declares a `timeout-minutes` bound
+(and network-heavy steps add their own step-level timeout on top of it), so a
+hung install, test run, or external call fails fast instead of consuming a
+runner indefinitely. Jobs that can fail in a way that isn't obvious from the
+job name (deploys, gates, long test suites) write a short failure summary to
+`$GITHUB_STEP_SUMMARY` — what failed and where to look next (a runbook under
+`docs/`, an uploaded artifact) — instead of leaving the reader to open raw
+logs. No step logs or echoes credentials; secrets are only ever referenced
+via `${{ secrets.* }}` inside `env:`.
+
 The vocabulary is deliberately small:
 
 | Prefix | Answers | Examples |
