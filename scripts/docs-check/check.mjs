@@ -19,7 +19,12 @@
  */
 import { REPO_ROOT } from "./lib/shared.mjs";
 import { checkOpenApiStructure } from "./lib/openapi.mjs";
-import { checkContractDrift, checkGlobalPrefixInvariant } from "./lib/contract.mjs";
+import {
+  checkContractDrift,
+  checkGlobalPrefixInvariant,
+  checkSorobanErrorDocs,
+  checkAssetOnboardingGuide,
+} from "./lib/contract.mjs";
 import { checkMobileDocs } from "./lib/mobile.mjs";
 import { checkEnvPrecedence } from "./lib/env-precedence.mjs";
 
@@ -36,10 +41,29 @@ export function runCheck(root = REPO_ROOT, { only = "all" } = {}) {
     // contract target rather than getting a target of its own.
     const drift = checkContractDrift(root);
     const prefix = checkGlobalPrefixInvariant(root);
+    // Soroban error-code docs (#573) and the verified-asset onboarding guide
+    // (#572) are contract-facing claims, so they ride with the contract target.
+    const sorobanErrors = checkSorobanErrorDocs(root);
+    const assetOnboarding = checkAssetOnboardingGuide(root);
     checks.contract = {
-      errors: [...drift.errors, ...prefix.errors],
-      warnings: [...drift.warnings, ...prefix.warnings],
-      summary: { ...drift.summary, globalPrefix: prefix.summary.globalPrefix },
+      errors: [
+        ...drift.errors,
+        ...prefix.errors,
+        ...sorobanErrors.errors,
+        ...assetOnboarding.errors,
+      ],
+      warnings: [
+        ...drift.warnings,
+        ...prefix.warnings,
+        ...sorobanErrors.warnings,
+        ...assetOnboarding.warnings,
+      ],
+      summary: {
+        ...drift.summary,
+        globalPrefix: prefix.summary.globalPrefix,
+        sorobanErrors: sorobanErrors.summary,
+        assetOnboarding: assetOnboarding.summary,
+      },
     };
   }
   if (only === "all" || only === "mobile") {
