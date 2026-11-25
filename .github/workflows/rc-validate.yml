@@ -61,6 +61,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
+          version: 10.33.0
           run_install: false
 
       - name: Set up Node.js
@@ -133,6 +134,12 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
+      - name: Summarize failure
+        if: failure()
+        run: |
+          echo "### :x: Release candidate validation failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "See the gate report artifact and https://github.com/${{ github.repository }}/blob/main/docs/DEPLOYMENT-RUNBOOK.md" >> "$GITHUB_STEP_SUMMARY"
+
   load-test:
     name: Payment-link load test (k6)
     runs-on: ubuntu-latest
@@ -153,6 +160,7 @@ jobs:
 
       - name: Run payment-link creation load test
         if: env.BASE_URL != ''
+        timeout-minutes: 10
         run: k6 run --summary-export=k6-summary.json app/backend/test/load/payment-link-creation.js
 
       - name: Upload k6 summary
@@ -162,4 +170,9 @@ jobs:
           name: k6-summary-${{ github.run_id }}
           path: k6-summary.json
           if-no-files-found: ignore
-          retention-days: 90
+
+      - name: Summarize failure
+        if: failure()
+        run: |
+          echo "### :x: Payment-link load test failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "A k6 threshold (p95 < 500ms, error rate < 1%) was breached, or the job timed out." >> "$GITHUB_STEP_SUMMARY"
