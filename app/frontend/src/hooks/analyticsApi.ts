@@ -65,7 +65,20 @@ type ApiReport = {
   timeSeries: ApiTimeSeriesItem[];
 };
 
-const analyticsCache: Partial<Record<DateRange, AnalyticsData>> = {};
+// Keyed by `${publicKey}:${range}` — switching accounts must not serve a
+// previous account's cached report for the same range.
+const analyticsCache: Record<string, AnalyticsData> = {};
+
+function analyticsCacheKey(publicKey: string, range: DateRange): string {
+  return `${publicKey}:${range}`;
+}
+
+export function clearAnalyticsCache(): void {
+  for (const key of Object.keys(analyticsCache)) {
+    delete analyticsCache[key];
+  }
+}
+
 const ASSET_COLORS: Record<string, string> = {
   USDC: "#6366f1",
   XLM: "#8b5cf6",
@@ -186,12 +199,15 @@ function fallbackEmpty(): AnalyticsData {
   };
 }
 
-export async function fetchAnalytics(range: DateRange): Promise<AnalyticsData> {
-  if (analyticsCache[range]) {
-    return Promise.resolve(analyticsCache[range] as AnalyticsData);
+export async function fetchAnalytics(
+  range: DateRange,
+  publicKey: string = resolvePublicKey(),
+): Promise<AnalyticsData> {
+  const cacheKey = analyticsCacheKey(publicKey, range);
+  if (analyticsCache[cacheKey]) {
+    return Promise.resolve(analyticsCache[cacheKey]);
   }
 
-  const publicKey = resolvePublicKey();
   const { startDate, endDate, interval } = rangeToWindow(range);
   const url = new URL(`${getQuickexApiBase()}/analytics/report`);
   url.searchParams.set("publicKey", publicKey);
@@ -206,12 +222,12 @@ export async function fetchAnalytics(range: DateRange): Promise<AnalyticsData> {
     }
     const report = (await res.json()) as ApiReport;
     const parsed = toUiModel(report);
-    analyticsCache[range] = parsed;
+    analyticsCache[cacheKey] = parsed;
     return parsed;
   } catch (error) {
     console.warn("Falling back to empty analytics data:", error);
     const empty = fallbackEmpty();
-    analyticsCache[range] = empty;
+    analyticsCache[cacheKey] = empty;
     return empty;
   }
 }

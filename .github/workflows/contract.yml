@@ -73,6 +73,7 @@ jobs:
           name: quickex-contract-budget-report
           path: app/contract/target/quickex-budget-report/
           if-no-files-found: ignore
+          retention-days: 7
 
       - name: Run tests
         run: cargo test

@@ -131,7 +131,7 @@ jobs:
           name: rc-validation-${{ github.run_id }}
           path: |
             /tmp/rc-*.log
-          retention-days: 14
+          retention-days: 90
           if-no-files-found: ignore
 
       - name: Summarize failure

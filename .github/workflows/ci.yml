@@ -254,3 +254,7 @@ jobs:
           path: |
             release-scorecard.md
             release-scorecard.json
+          # PR runs are ephemeral feedback; main-branch runs are release
+          # evidence and need to survive for the audit period. See
+          # docs/policies/RELEASE-ARTIFACT-RETENTION.md.
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 90 }}
