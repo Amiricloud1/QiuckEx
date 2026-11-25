@@ -12,7 +12,7 @@
  *
  * Usage:
  *   node scripts/docs-check/check.mjs                     # all checks
- *   node scripts/docs-check/check.mjs --only contract     # openapi|contract|mobile|env
+ *   node scripts/docs-check/check.mjs --only contract     # openapi|contract|mobile|env|troubleshooting|privacy
  *   node scripts/docs-check/check.mjs --json              # machine-readable report
  *
  * Exit codes: 0 = no errors, 1 = errors, 2 = usage error.
@@ -27,8 +27,18 @@ import {
 } from "./lib/contract.mjs";
 import { checkMobileDocs } from "./lib/mobile.mjs";
 import { checkEnvPrecedence } from "./lib/env-precedence.mjs";
+import { checkTroubleshootingGuide } from "./lib/troubleshooting.mjs";
+import { checkPrivacyFieldInventory } from "./lib/privacy-inventory.mjs";
 
-const VALID_TARGETS = ["all", "openapi", "contract", "mobile", "env"];
+const VALID_TARGETS = [
+  "all",
+  "openapi",
+  "contract",
+  "mobile",
+  "env",
+  "troubleshooting",
+  "privacy",
+];
 
 export function runCheck(root = REPO_ROOT, { only = "all" } = {}) {
   const checks = {};
@@ -71,6 +81,12 @@ export function runCheck(root = REPO_ROOT, { only = "all" } = {}) {
   }
   if (only === "all" || only === "env") {
     checks.env = checkEnvPrecedence(root);
+  }
+  if (only === "all" || only === "troubleshooting") {
+    checks.troubleshooting = checkTroubleshootingGuide(root);
+  }
+  if (only === "all" || only === "privacy") {
+    checks.privacy = checkPrivacyFieldInventory(root);
   }
 
   const errors = Object.entries(checks).flatMap(([name, result]) =>

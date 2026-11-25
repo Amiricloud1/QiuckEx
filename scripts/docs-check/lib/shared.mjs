@@ -24,7 +24,8 @@ export const PATHS = {
   mobileConfig: "app/mobile/app.config.ts",
   accessibilityGuide: "docs/ACCESSIBILITY-TESTING-GUIDE.md",
   glossary: "docs/GLOSSARY.md",
-  assetOnboardingGuide: "docs/ASSET-ONBOARDING-GUIDE.md",
+  troubleshootingGuide: "docs/API-TROUBLESHOOTING-GUIDE.md",
+  privacyFieldInventory: "docs/PRIVACY-FIELD-INVENTORY.md",
 };
 
 export function fromRoot(root, relative) {
