@@ -37,6 +37,13 @@
 #                    (never logged)
 #   COSIGN_PUBLIC_KEY_FILE  public key used by verify-images (default cosign.pub)
 #   RC_PROVENANCE_POLICY    cosign attestation policy file
+#   RC_RELEASE_MANIFEST     path to the release manifest (default
+#                    release-manifest.json). Written by the release-manifest
+#                    stage and referenced by deployment runs for traceability.
+#   RC_RELEASE_VERSION      release version recorded in the manifest
+#                    (default: package.json version)
+#   RC_MANIFEST_SCHEMA      manifest schema file
+#                    (default scripts/release-manifest.schema.json)
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -49,6 +56,8 @@ LIST_ONLY=0
 ALLOW_SKIP="${RC_ALLOW_SKIP:-0}"
 STAGE_FILTER=""
 RC_BASE_REF="${RC_BASE_REF:-origin/main}"
+RC_RELEASE_MANIFEST="${RC_RELEASE_MANIFEST:-release-manifest.json}"
+RC_MANIFEST_SCHEMA="${RC_MANIFEST_SCHEMA:-scripts/release-manifest.schema.json}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -84,6 +93,7 @@ FULL_STAGES=(
   "openapi|pnpm|0|Committed openapi.json matches the code"
   "sign-images|cosign|1|Release image digests signed with cosign"
   "verify-images|cosign|0|Image signatures and provenance verified before deploy"
+  "release-manifest|node|0|Release manifest generated, schema-valid, digest-complete"
   "capability-map|git|1|Capability-map rows changed alongside behavior"
 )
 
@@ -387,6 +397,29 @@ for stage in "${STAGES[@]}"; do
       fi
       ;;
 
+    release-manifest)
+      # Builds the versioned release manifest that links source (commit SHAs)
+      # to deployed components (immutable digests), then validates it against
+      # the schema. The manifest must be complete: every component needs a
+      # digest, and the file must contain no secrets. Deployment runs consume
+      # this exact file, so a missing or invalid manifest blocks the candidate.
+      if [ -z "${RC_IMAGE_DIGESTS:-}" ]; then
+        detail="FAILED: RC_IMAGE_DIGESTS is unset (manifest would lack digests)"
+      elif ! node scripts/release-manifest.mjs generate \
+             --out "$RC_RELEASE_MANIFEST" \
+             --digests "$RC_IMAGE_DIGESTS" \
+             --version "${RC_RELEASE_VERSION:-}" >/tmp/rc-manifest.log 2>&1; then
+        detail="FAILED: manifest generation (see /tmp/rc-manifest.log)"
+      elif ! node scripts/release-manifest.mjs validate \
+             --manifest "$RC_RELEASE_MANIFEST" \
+             --schema "$RC_MANIFEST_SCHEMA" >/tmp/rc-manifest-validate.log 2>&1; then
+        detail="FAILED: manifest schema/secret/digest validation (see /tmp/rc-manifest-validate.log)"
+      else
+        ok=1
+        detail="manifest $RC_RELEASE_MANIFEST valid (schema, no secrets, digests present)"
+      fi
+      ;;
+
     capability-map)
       # ADR 0004: changing shipped behaviour updates docs/CAPABILITY-MAP.md in
       # the same PR. This reports the blast radius; a row changed without a
@@ -426,6 +459,13 @@ log "─────────────────────────
 if [ "$GH_NOTE" -eq 1 ]; then
   { echo ""; echo "**${#RESULT_NAMES[@]} stages in ${TOTAL_MS}ms — pass $PASSES, fail $FAILURES, skip $SKIPS**"; } \
     >> "$GITHUB_STEP_SUMMARY"
+  # Surface the manifest path so a deployment run can be traced back to the
+  # exact artifacts this candidate validated.
+  if [ -f "$RC_RELEASE_MANIFEST" ]; then
+    manifest_digest="$(sha256sum "$RC_RELEASE_MANIFEST" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
+    { echo ""; echo "Release manifest: \`$RC_RELEASE_MANIFEST\` (sha256:\`$manifest_digest\`)"; } \
+      >> "$GITHUB_STEP_SUMMARY"
+  fi
 fi
 
 # Exit-code contract, in priority order:
@@ -459,5 +499,8 @@ fi
 
 log ""
 log "::notice::release candidate ACCEPTED — all ${#RESULT_NAMES[@]} stages passed"
-[ "$JSON" -eq 1 ] && printf '{"result":"ACCEPTED","failures":0,"skips":0}\n'
+if [ -f "$RC_RELEASE_MANIFEST" ]; then
+  log "  manifest: $RC_RELEASE_MANIFEST (deployment runs must reference this file)"
+fi
+[ "$JSON" -eq 1 ] && printf '{"result":"ACCEPTED","failures":0,"skips":0,"manifest":"%s"}\n' "$RC_RELEASE_MANIFEST"
 exit 0
