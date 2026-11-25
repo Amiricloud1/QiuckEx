@@ -84,6 +84,31 @@ const ASSET_COLORS: Record<string, string> = {
   XLM: "#8b5cf6",
 };
 
+/**
+ * Freshness metadata (retrieval time, cached/failed) for the last
+ * `fetchAnalytics` call for a given range. Lets callers show "as of HH:MM"
+ * and distinguish a cached/fallback value from a just-fetched live one.
+ */
+export function getAnalyticsFreshness(range: DateRange): AnalyticsFreshness | undefined {
+  return lastFreshness[range];
+}
+
+/**
+ * Drop cached analytics data so the next `fetchAnalytics` call hits the
+ * network again. Call this when something changed upstream (a realtime
+ * update event, a new payment) instead of relying on the in-memory cache
+ * forever, which would otherwise keep serving the same snapshot.
+ */
+export function invalidateAnalyticsCache(range?: DateRange): void {
+  if (range) {
+    delete analyticsCache[range];
+  } else {
+    for (const key of Object.keys(analyticsCache) as DateRange[]) {
+      delete analyticsCache[key];
+    }
+  }
+}
+
 function rangeToWindow(range: DateRange): {
   startDate: string;
   endDate: string;
