@@ -1,17 +1,12 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AnalyticsDashboard from "@/components/AnalyticsDashboard";
 import { NetworkBadge } from "@/components/NetworkBadge";
-import {
-  fetchAnalytics,
-  getAnalyticsFreshness,
-  invalidateAnalyticsCache,
-  type AnalyticsData,
-  type AnalyticsFreshness,
-} from "@/hooks/analyticsApi";
+import { fetchAnalytics, clearAnalyticsCache, type AnalyticsData } from "@/hooks/analyticsApi";
+import { getActivePublicKey, subscribeToActivePublicKey } from "@/lib/publicKey";
 import {
   fetchUserBids,
   fetchUserListings,
@@ -77,49 +72,50 @@ function DashboardContent() {
   const [feedRetryCount, setFeedRetryCount] = useState(0);
   const [wizardOpen, setWizardOpen] = useState(false);
 
+  const [activePublicKey, setActivePublicKey] = useState(() => getActivePublicKey());
+  const activePublicKeyRef = useRef(activePublicKey);
+  activePublicKeyRef.current = activePublicKey;
+
+  // Switching accounts must drop any rows fetched for the previous key immediately,
+  // and any response already in flight for that previous key must be ignored once
+  // it resolves rather than overwriting the newly active account's view.
+  useEffect(() => {
+    return subscribeToActivePublicKey((nextPublicKey) => {
+      if (nextPublicKey === activePublicKeyRef.current) {
+        return;
+      }
+      clearAnalyticsCache();
+      setData(null);
+      setUserBids([]);
+      setUserListings([]);
+      setMetricsData(null);
+      setActivePublicKey(nextPublicKey);
+    });
+  }, []);
+
   const refreshActivity = useCallback(async () => {
+    const forPublicKey = activePublicKeyRef.current;
     setLoading(true);
     setError(null);
     try {
-      let refreshed = await fetchActivityFeed(20);
-
-      if (!refreshed.degraded) {
-        // If the user had previously paginated further than the first page for
-        // this same account + network, catch the feed back up to that point so
-        // a refresh/tab-restore doesn't look like it "restarted from the
-        // beginning" or surface rows the user has already scrolled past.
-        const restoredCursor = loadActivityFeedCursor();
-        if (restoredCursor && restoredCursor !== refreshed.nextCursor) {
-          let current = refreshed;
-          let guard = 0;
-          const MAX_AUTO_PAGES = 25;
-          while (
-            current.nextCursor &&
-            current.nextCursor !== restoredCursor &&
-            guard < MAX_AUTO_PAGES
-          ) {
-            const next = await fetchActivityFeed(20, current.nextCursor);
-            if (next.degraded) break;
-            current = {
-              ...next,
-              items: appendUniqueActivityItems(current.items, next.items),
-            };
-            guard += 1;
-          }
-          refreshed = current;
-        }
-        saveActivityFeedCursor(refreshed.nextCursor);
+      const refreshed = await fetchActivityFeed(20, undefined, forPublicKey);
+      if (activePublicKeyRef.current !== forPublicKey) {
+        return;
       }
-
       setData((current) =>
         refreshed.degraded && current
           ? { ...current, degraded: true, error: refreshed.error }
           : refreshed,
       );
     } catch (err: unknown) {
+      if (activePublicKeyRef.current !== forPublicKey) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Activity could not be loaded.");
     } finally {
-      setLoading(false);
+      if (activePublicKeyRef.current === forPublicKey) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -133,32 +129,47 @@ function DashboardContent() {
     asset: "All",
   });
 
-  const loadMetrics = useCallback(async (opts?: { forceRefresh?: boolean }) => {
+  const loadMetrics = useCallback(async () => {
+    const forPublicKey = activePublicKeyRef.current;
     setMetricsLoading(true);
     setMetricsError(null);
     try {
-      if (opts?.forceRefresh) {
-        invalidateAnalyticsCache("30d");
+      const data = await fetchAnalytics("30d", forPublicKey);
+      if (activePublicKeyRef.current !== forPublicKey) {
+        return;
       }
-      const data = await fetchAnalytics("30d");
       setMetricsData(data);
       setMetricsFreshness(getAnalyticsFreshness("30d") ?? null);
     } catch (err: unknown) {
+      if (activePublicKeyRef.current !== forPublicKey) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to load backend metrics";
       setMetricsError(message);
     } finally {
-      setMetricsLoading(false);
+      if (activePublicKeyRef.current === forPublicKey) {
+        setMetricsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void loadMetrics();
-  }, [loadMetrics]);
+  }, [loadMetrics, activePublicKey]);
 
   useEffect(() => {
+    const forPublicKey = activePublicKeyRef.current;
     void refreshActivity();
-    void fetchUserBids().then(setUserBids);
-    void fetchUserListings().then(setUserListings);
+    void fetchUserBids(forPublicKey).then((bids) => {
+      if (activePublicKeyRef.current === forPublicKey) {
+        setUserBids(bids);
+      }
+    });
+    void fetchUserListings(forPublicKey).then((listings) => {
+      if (activePublicKeyRef.current === forPublicKey) {
+        setUserListings(listings);
+      }
+    });
 
     const unsubscribe = cacheInvalidator.subscribe((event) => {
       if (
@@ -171,7 +182,7 @@ function DashboardContent() {
       }
     });
     return () => unsubscribe();
-  }, [feedRetryCount, loadMetrics, refreshActivity]);
+  }, [feedRetryCount, loadMetrics, refreshActivity, activePublicKey]);
 
   useEffect(() => {
     if (!statusMessage) {
@@ -279,10 +290,14 @@ function DashboardContent() {
   const handleLoadMore = async () => {
     if (!data?.nextCursor || loadingMore) return;
     const previousData = data;
+    const forPublicKey = activePublicKeyRef.current;
     setLoadingMore(true);
     try {
-      const nextPage = await fetchActivityFeed(20, previousData.nextCursor);
-      const merged = {
+      const nextPage = await fetchActivityFeed(20, previousData.nextCursor, forPublicKey);
+      if (activePublicKeyRef.current !== forPublicKey) {
+        return;
+      }
+      setData({
         ...nextPage,
         items: appendUniqueActivityItems(previousData.items, nextPage.items),
         nextCursor: nextPage.degraded ? previousData.nextCursor : nextPage.nextCursor,
@@ -292,7 +307,9 @@ function DashboardContent() {
         saveActivityFeedCursor(merged.nextCursor);
       }
     } finally {
-      setLoadingMore(false);
+      if (activePublicKeyRef.current === forPublicKey) {
+        setLoadingMore(false);
+      }
     }
   };
 

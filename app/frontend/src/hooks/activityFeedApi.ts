@@ -154,9 +154,9 @@ export function appendUniqueActivityItems(
 export async function fetchActivityFeed(
   limit = 20,
   cursor?: string,
+  publicKey: string = resolvePublicKey(),
 ): Promise<ActivityFeedResponse> {
   try {
-    const publicKey = resolvePublicKey();
     const url = new URL(`${getQuickexApiBase()}/payments/recent`);
     url.searchParams.set("address", publicKey);
     url.searchParams.set("limit", String(limit));

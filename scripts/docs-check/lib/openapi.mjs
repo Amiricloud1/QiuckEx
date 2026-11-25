@@ -12,6 +12,28 @@ import { PATHS, readJson, unique } from "./shared.mjs";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "patch", "options", "head", "trace"];
 
+/**
+ * Endpoints the troubleshooting guide depends on (issue #576). The guide links
+ * readers to the machine-readable error registry, so the spec must keep
+ * exposing it; a rename here would silently break every guide link.
+ */
+const REQUIRED_DOC_PATHS = ["/api/errors", "/api/errors/{code}"];
+
+/**
+ * Error codes the troubleshooting guide documents. Each must appear in the
+ * canonical error registry enum so the guide cannot describe a code the API
+ * never emits, or omit one it does.
+ */
+const REQUIRED_ERROR_CODES = [
+  "invalid_request",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "conflict",
+  "rate_limited",
+  "internal_error",
+];
+
 /** Resolve a local JSON pointer (`#/components/schemas/Foo`) against a document. */
 export function resolveRef(document, ref) {
   if (!ref.startsWith("#/")) return { found: true, external: true };
@@ -135,5 +157,59 @@ export function checkOpenApiStructure(root) {
     }
   }
 
+  checkTroubleshootingContract(document, errors, warnings);
+
   return { errors, warnings, summary };
+}
+
+/**
+ * Validate the error-code contract the troubleshooting guide is keyed by
+ * (issue #576). The guide is generated from the canonical registry, so the
+ * spec must expose the registry endpoints and a stable, non-empty enum of
+ * public codes that covers every code the guide documents.
+ */
+function checkTroubleshootingContract(document, errors, warnings) {
+  const paths = document.paths ?? {};
+  for (const required of REQUIRED_DOC_PATHS) {
+    if (!paths[required]) {
+      errors.push(`${PATHS.openapi}: missing "${required}", which the troubleshooting guide links to`);
+    }
+  }
+
+  const errorCodeSchema = document.components?.schemas?.ErrorCode;
+  if (!errorCodeSchema) {
+    errors.push(`${PATHS.openapi}: missing the \`ErrorCode\` schema the troubleshooting guide is keyed by`);
+    return;
+  }
+
+  const codes = Array.isArray(errorCodeSchema.enum) ? errorCodeSchema.enum : [];
+  if (codes.length === 0) {
+    errors.push(`${PATHS.openapi}: \`ErrorCode\` declares no enum values, so the guide has nothing to key on`);
+    return;
+  }
+
+  const seen = new Set();
+  for (const code of codes) {
+    if (typeof code !== "string" || code.length === 0) {
+      errors.push(`${PATHS.openapi}: \`ErrorCode\` contains a non-string or empty value`);
+      continue;
+    }
+    if (seen.has(code)) {
+      errors.push(`${PATHS.openapi}: \`ErrorCode\` lists "${code}" more than once`);
+    }
+    seen.add(code);
+  }
+
+  for (const code of REQUIRED_ERROR_CODES) {
+    if (!seen.has(code)) {
+      errors.push(`${PATHS.openapi}: \`ErrorCode\` is missing "${code}", which the troubleshooting guide documents`);
+    }
+  }
+
+  const undocumented = [...seen].filter((code) => !REQUIRED_ERROR_CODES.includes(code));
+  if (undocumented.length > 0) {
+    warnings.push(
+      `${PATHS.openapi}: \`ErrorCode\` lists ${undocumented.map((code) => `"${code}"`).join(", ")} without a troubleshooting entry`,
+    );
+  }
 }
