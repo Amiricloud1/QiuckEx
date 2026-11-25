@@ -92,6 +92,56 @@ part of the same change:
 The baseline update is the record that the breaking change was reviewed and
 approved. Do not update the baseline without a corresponding code change.
 
+## Storage-Layout Compatibility Fixtures
+
+Upgrade checks must exercise realistic serialized state from the version being
+migrated, not only freshly initialized state. The gate therefore keeps a
+minimal prior-version storage-layout fixture alongside the baseline:
+
+```
+contracts/escrow/fixtures/storage-layout-prior.json
+```
+
+The fixture is a serialized snapshot of the prior contract version's persistent
+state. It is decoded in CI as part of the gate run; a fixture that fails to
+decode fails the build.
+
+### Fixture Contract
+
+A fixture is a JSON object with the following shape:
+
+```json
+{
+  "version": 1,
+  "owner": "<address>",
+  "asset": "<address>",
+  "amount": "<integer>",
+  "status": "<enum>",
+  "nonce": "<integer>"
+}
+```
+
+- `version` identifies the storage layout version the fixture was written for.
+- `owner`, `asset`, `amount`, `status`, and `nonce` are the fields the migration
+  must preserve.
+
+### Migration Guarantees
+
+When the gate runs a migration against a fixture it enforces:
+
+- **Field preservation** — `owner`, `asset`, `amount`, `status`, and `nonce` are
+  carried through the migration unchanged.
+- **Determinism** — running the migration twice against the same fixture
+  produces byte-identical output. Non-deterministic migrations fail the gate.
+- **Fail closed** — a fixture containing unknown fields, or a `version` that is
+  not a supported prior version, is rejected. The gate never silently drops
+  unknown fields or guesses at an unsupported version; it fails the build.
+
+To add a fixture for a new prior version, drop the serialized snapshot in
+`contracts/escrow/fixtures/`, bump the supported-version list in the migration
+code, and add focused coverage that asserts field preservation, determinism,
+and the fail-closed behavior for unknown fields and unsupported versions.
+
 ## Override Procedure
 
 An override allows a build to pass despite a breaking change without updating
