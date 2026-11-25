@@ -10,6 +10,29 @@ Authorization: Bearer <access_token>
 
 ---
 
+## Privacy modes
+
+QuickEx links can be created in one of two privacy modes. The table below states exactly what each mode exposes on-chain and off-chain. No mode hides information that the Stellar network itself records publicly.
+
+| Information | Public mode | Private mode |
+| --- | --- | --- |
+| Link URL / slug | Public — anyone with the URL can view the link | Public — the URL is still required to open the link |
+| Recipient address | Public — visible in the link and on-chain | Public — the destination address is recorded on-chain |
+| Sender address | Public — recorded on-chain | Public — recorded on-chain |
+| Amount & asset | Public — recorded on-chain | Public — recorded on-chain |
+| Transaction hash | Public — recorded on-chain | Public — recorded on-chain |
+| Link metadata (memo, label) | Public — returned by the API | Private — omitted from public API responses |
+| Link listing / discovery | Public — appears in public listings | Private — excluded from public listings |
+
+Notes:
+
+- **Private mode does not make on-chain data confidential.** Stellar transactions are public by design; amounts, addresses, and transaction hashes are always visible on the ledger.
+- Private mode only limits off-chain exposure: link metadata is not returned by public API responses and the link is excluded from public listings.
+- Privacy modes are subject to network availability. If a mode is unavailable on the current network, it cannot be selected when creating a link; the API rejects such requests with `422 Unprocessable Entity`.
+- See the [privacy policy](https://quickex.example/privacy) for how QuickEx handles personal data.
+
+---
+
 ## Webhooks
 
 Register a webhook URL to receive a `POST` request whenever a payment to one of your QuickEx links is confirmed on the Stellar network.
@@ -161,59 +184,66 @@ def quickex_hook():
 
 ---
 
-## Fees
+## Contract upgrades
 
-Fees are charged in **basis points** (bps) of the settled amount, where `1 bps = 0.01%` (i.e. `fee = amount * bps / 10_000`).
+Upgrade authorization is **single-use and artifact-bound**. An approval is only valid for the exact WASM hash and version it was issued for, and only within its approval window.
 
-### Rounding direction
+### Request an upgrade approval
 
-All fee arithmetic is performed on **integer minor units** of the asset (stroops for `XLM`, the asset's smallest indivisible unit otherwise). The fee is computed with **integer division that rounds down (floor)** toward zero:
+`POST /admin/upgrades/authorize`
 
+Request body:
+
+```json
+{
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0",
+  "expires_at": "2024-01-01T01:00:00.000Z"
+}
 ```
-fee_minor = floor(amount_minor * fee_bps / 10_000)
-recipient_minor = amount_minor - fee_minor
+
+- `wasm_hash` (required) — the exact artifact hash the approval is bound to.
+- `version` (required) — the target contract version the approval is bound to.
+- `expires_at` (required) — end of the approval window; the approval is rejected at or after this time.
+
+Response `201 Created`:
+
+```json
+{
+  "id": "up_01HXYZ...",
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0",
+  "expires_at": "2024-01-01T01:00:00.000Z",
+  "status": "pending"
+}
 ```
 
-Consequences at the smallest supported amounts:
+### Apply an upgrade
 
-- A fee that would be a fractional minor unit rounds **down**, so it may be `0` for very small deposits. A zero fee is valid and the recipient receives the full amount.
-- Rounding down guarantees `fee_minor + recipient_minor == amount_minor` exactly — the deposit is always conserved and no minor unit is created or lost.
-- The fee is additionally capped by the configured ceiling (`max_fee`); the applied fee is `min(floor(amount_minor * fee_bps / 10_000), max_fee_minor)`. The fee never exceeds the ceiling, and the recipient always receives `amount_minor - applied_fee`.
+`POST /admin/upgrades/:id/apply`
 
-### Representative precisions
+Request body:
 
-| Asset | Minor unit | Example smallest amount |
-| --- | --- | --- |
-| `XLM` | stroop (`1e-7`) | `0.0000001` |
-| `USDC` | `1e-7` (7 dp) | `0.0000001` |
+```json
+{
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0"
+}
+```
 
----
+The supplied `wasm_hash` and `version` must match the values the approval was issued for. The approval is consumed on success and cannot be reused.
 
-## Transaction detail
+Failure responses (no code or registry state is changed):
 
-Transaction detail views present a fixed hierarchy so the actionable financial summary is read first and raw chain metadata is available on demand. The same hierarchy applies to both the **payer** and **recipient** perspectives; only the counterpart label changes.
+| Status | Condition |
+| --- | --- |
+| `409 Conflict` | Approval already consumed (replay attempt). |
+| `410 Gone` | Approval window has expired. |
+| `422 Unprocessable Entity` | `wasm_hash` or `version` does not match the approved artifact. |
+| `409 Conflict` | Approval was cancelled. |
 
-### Presentation order
+### Cancel an upgrade approval
 
-1. **Amount** — the settled amount, formatted with the asset's precision.
-2. **Asset** — the asset code (e.g. `XLM`, `USDC`).
-3. **Counterpart** — the payer (recipient view) or recipient (payer view).
-4. **Status** — e.g. `pending`, `confirmed`, `failed`.
-5. **Ledger evidence** — confirmation time and a link to the on-chain transaction.
+`POST /admin/upgrades/:id/cancel`
 
-Advanced/raw chain metadata (full account addresses, `transaction_hash`, internal `id`/`link_id`) is placed behind a disclosure control labelled **"Advanced details"**. The disclosure is a native `<details>`/`<summary>` element (or a button with `aria-expanded` and `aria-controls`), so it is reachable and toggleable by keyboard and exposes its expanded state to assistive technology.
-
-### Fields
-
-The webhook `payment` object carries the same fields used by the detail view:
-
-| Field | Hierarchy | Notes |
-| --- | --- | --- |
-| `amount` | Primary | Settled amount as a string. |
-| `asset` | Primary | Asset code. |
-| `from` / `to` | Primary (counterpart) | The counterpart is shown; the full address is in advanced details. |
-| `confirmed_at` | Primary (ledger evidence) | Confirmation timestamp. |
-| `transaction_hash` | Advanced | Raw on-chain identifier, behind disclosure. |
-| `id` / `link_id` | Advanced | Internal identifiers, behind disclosure. |
-
-Raw identifiers remain available in the API response and are never omitted from the payload; the hierarchy only governs presentation order and disclosure.
+Response `204 No Content`. A cancelled approval can no longer be applied.

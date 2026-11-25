@@ -233,6 +233,97 @@ npm run start
 
 ### Logging
 - Structured logging with Winston
-- Request/response logging with correlation IDs
-- Error logging with stack traces
-- Performance metrics logging
+- Correlation IDs for request tracing
+- Different log levels for development and production
+- All logs include: `request_id`, `user_id`, `route`, `method`, `duration`, `status`
+
+## Runbook
+
+### Observability
+
+#### Checking Request Traces
+1. Extract `correlationId` from request headers (`x-correlation-id`)
+2. Search logs for the correlation ID to trace full request lifecycle
+3. Check `logs/combined.log` for structured JSON logs
+4. Check `logs/error.log` for error-specific logs
+
+#### Monitoring Ingestion Lag
+1. Query `ingestion_lag_seconds` metric for contract ID
+2. Alert if lag exceeds 60 seconds (indicates stalled ingestion)
+3. Check ingestion service logs for stream errors
+4. Verify Horizon API connectivity
+
+#### Debugging Webhook Failures
+1. Check `webhook_retry_total` metric for retry counts
+2. Query `webhook_delivery_duration_seconds` for latency patterns
+3. Review notification logs in database for specific webhook URLs
+4. Use `GET /webhooks/delivery-logs` endpoint for detailed logs
+5. Trigger manual redelivery via `POST /webhooks/redeliver`
+
+#### Identifying Slow External Dependencies
+1. Query `external_call_duration_seconds` by service label
+2. High latency on `horizon` operations indicates network issues
+3. High latency on `webhook` operations indicates endpoint issues
+4. Check `error_total` metric for error types by service
+
+### Reconciliation
+
+#### Manual Reconciliation Trigger
+```bash
+# Trigger reconciliation run
+curl -X POST http://localhost:4000/reconciliation/trigger
+
+# Check reconciliation status
+curl http://localhost:4000/reconciliation/status
+```
+
+#### Interpreting Reconciliation Reports
+- `processed` - Total records checked
+- `updated` - Records updated to match on-chain state
+- `noOp` - Records already consistent with on-chain state
+- `skipped` - Records skipped due to Horizon unavailability
+- `irreconcilable` - Records requiring manual review
+
+#### Handling Irreconcilable Records
+1. Check logs for `IRRECONCILABLE` error messages
+2. Verify on-chain state using Stellar expert or Horizon directly
+3. For escrows: Check if account exists, balance, and expiry
+4. For payments: Verify transaction hash on-chain
+5. Manual database update may be required after verification
+
+#### Backfill Operations
+```bash
+# Trigger backfill for specific ledger range
+curl -X POST http://localhost:4000/reconciliation/backfill \
+  -H "Content-Type: application/json" \
+  -d '{"startLedger": 1000, "endLedger": 2000}'
+```
+
+## Upgrade Authorization
+
+### Binding Rules
+Upgrade approvals are bound to the exact artifact they authorize. An approval record captures:
+
+- `wasmHash` - The SHA-256 hash of the approved WASM artifact
+- `version` - The intended contract version
+- `windowStart` / `windowEnd` - The upgrade window during which the approval is valid
+- `status` - `pending`, `consumed`, `cancelled`, or `expired`
+
+An approval can only be consumed once, and only when the installed artifact's hash and version match the approved values and the current ledger time falls within the approval window.
+
+### Replay Protection
+- **Changed artifact**: Installing a WASM whose hash differs from the approved `wasmHash` is rejected; the approval remains unconsumed and no code or registry state changes.
+- **Reuse**: A consumed approval cannot be replayed. Subsequent attempts fail with `UpgradeAuthorizationAlreadyConsumed` and leave code and registry state untouched.
+- **Expiry**: Attempts after `windowEnd` fail with `UpgradeAuthorizationExpired`; the approval transitions to `expired` without mutating code or registry state.
+- **Cancellation**: A cancelled approval cannot be consumed; attempts fail with `UpgradeAuthorizationCancelled`.
+
+### Failure Semantics
+All replay, expiry, cancellation, and changed-artifact failures are atomic: the contract code hash, version, and registry entries are unchanged when the authorization check fails. Failures are surfaced as typed errors so callers can distinguish the cause.
+
+### Test Coverage
+The upgrade authorization suite (`upgrade-authorization.*.spec.ts`) covers:
+- Successful install of the approved artifact within the window
+- Replay of a consumed approval
+- Expiry at and after `windowEnd`
+- Cancellation before consumption
+- Changed-artifact attempts (hash mismatch and version mismatch)
