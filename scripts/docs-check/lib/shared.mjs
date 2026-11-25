@@ -28,6 +28,23 @@ export const PATHS = {
   privacyFieldInventory: "docs/PRIVACY-FIELD-INVENTORY.md",
 };
 
+/**
+ * Required `##` sections for the webhook consumer quickstart.
+ *
+ * The quickstart must cover endpoint setup, signature verification (including
+ * a negative example), idempotent processing, retry behavior, and a local test
+ * event. Section identifiers are matched by leading number via
+ * `missingSections`, so renumbering does not break the gate.
+ */
+export const WEBHOOK_QUICKSTART_SECTIONS = [
+  "Endpoint setup",
+  "Signature verification",
+  "Negative example",
+  "Idempotent processing",
+  "Retry behavior",
+  "Local test event",
+];
+
 export function fromRoot(root, relative) {
   return join(root, relative);
 }
