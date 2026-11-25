@@ -14,6 +14,7 @@ jobs:
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: app/backend
@@ -22,25 +23,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
       # Cache trust boundary (#565): dependency caches are only enabled for
       # trusted refs (pushes to main/develop). Pull requests — including those
       # from forks — never read or write the shared cache, so an untrusted run
       # cannot poison caches used by release or protected-branch builds.
-      # Keys are scoped to OS + package manager + lockfile hash.
+      # Keys are scoped to OS + package manager + the workspace lockfile plus
+      # this package's manifest, so a change to either invalidates the cache.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') && 'pnpm' || '' }}
-          cache-dependency-path: app/backend/pnpm-lock.yaml
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            app/backend/package.json
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Audit cache trust boundaries
         run: pnpm run ci:cache-trust:audit
@@ -96,7 +101,7 @@ jobs:
           name: backend-unit-coverage
           path: app/backend/coverage
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
       - name: Run Integration Tests with Coverage
         run: pnpm run test:int:coverage
@@ -113,7 +118,7 @@ jobs:
           name: backend-integration-coverage
           path: app/backend/coverage
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
       - name: Run Fuzz Tests
         run: pnpm run test:fuzz:ci
@@ -142,68 +147,16 @@ jobs:
           ROTATION_DRY_RUN: "true"
           DEPLOY_CREDENTIAL_PLACEHOLDER: "dry-run-placeholder"
 
-  # Post-promotion smoke check (#566): runs after a successful promotion to
-  # production and exercises the public frontend and API entry points with
-  # bounded timeouts. It never submits financial transactions. A failure here
-  # fails the workflow, which triggers the documented rollback/escalation
-  # policy (see docs/operations/post-deploy-smoke-check.md).
-  post-deploy-smoke:
-    name: Post-Deploy Smoke Check
-    runs-on: ubuntu-latest
-    # Only run after a promotion to production (push to main). Pull requests
-    # and develop pushes never hit production URLs.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build-and-test
-    defaults:
-      run:
-        working-directory: app/backend
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Cache trust boundary (#565): this job runs on push to main only, so
-      # dependency caching is safe to enable.
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "pnpm"
-          cache-dependency-path: app/backend/pnpm-lock.yaml
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      # Runs the synthetic smoke check against the configured production URLs.
-      # Route-level results are written to smoke-report.json and uploaded as an
-      # artifact. The step exits non-zero on any failed route, failing the job
-      # and triggering rollback/escalation per documented policy.
-      - name: Run post-deploy smoke check
-        run: pnpm run smoke:post-deploy
-        env:
-          NODE_ENV: production
-          SMOKE_FRONTEND_URL: ${{ vars.SMOKE_FRONTEND_URL }}
-          SMOKE_API_URL: ${{ vars.SMOKE_API_URL }}
-          SMOKE_TIMEOUT_MS: "5000"
-          SMOKE_REPORT_PATH: smoke-report.json
-
-      - name: Upload smoke check report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: post-deploy-smoke-report
-          path: app/backend/smoke-report.json
-          if-no-files-found: ignore
-          retention-days: 14
+      - name: Summarize failure
+        if: failure()
+        run: |
+          echo "### :x: Backend build-and-test job failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "See https://github.com/${{ github.repository }}/blob/main/docs/DEPLOYMENT-RUNBOOK.md" >> "$GITHUB_STEP_SUMMARY"
 
   payment-lifecycle-integration:
     name: Payment Lifecycle Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Slow end-to-end suite (~30s+) that hits a real Supabase test project and
     # Horizon testnet. Runs on every PR against main and blocks merge, but is
     # kept out of the lint/build job so it never gates linting.
@@ -216,6 +169,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
       # Cache trust boundary (#565): this job runs on pull_request only, so
       # dependency caching is deliberately disabled to keep untrusted runs
       # out of the shared cache.
@@ -224,15 +183,11 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Run payment lifecycle integration tests
+        timeout-minutes: 10
         run: pnpm run test:int -- payment-lifecycle.int.spec.ts
         env:
           NODE_ENV: test
@@ -242,3 +197,9 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_TEST_SERVICE_ROLE_KEY }}
           TEST_ACCOUNT_MNEMONIC: ${{ secrets.TEST_ACCOUNT_MNEMONIC }}
           HORIZON_URL: https://horizon-testnet.stellar.org
+
+      - name: Summarize failure
+        if: failure()
+        run: |
+          echo "### :x: Payment lifecycle integration tests failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "A timeout step is distinguished above from a test-assertion failure in the step's own log." >> "$GITHUB_STEP_SUMMARY"

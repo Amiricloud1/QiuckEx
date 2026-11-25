@@ -10,6 +10,29 @@ Authorization: Bearer <access_token>
 
 ---
 
+## Privacy modes
+
+QuickEx links can be created in one of two privacy modes. The table below states exactly what each mode exposes on-chain and off-chain. No mode hides information that the Stellar network itself records publicly.
+
+| Information | Public mode | Private mode |
+| --- | --- | --- |
+| Link URL / slug | Public — anyone with the URL can view the link | Public — the URL is still required to open the link |
+| Recipient address | Public — visible in the link and on-chain | Public — the destination address is recorded on-chain |
+| Sender address | Public — recorded on-chain | Public — recorded on-chain |
+| Amount & asset | Public — recorded on-chain | Public — recorded on-chain |
+| Transaction hash | Public — recorded on-chain | Public — recorded on-chain |
+| Link metadata (memo, label) | Public — returned by the API | Private — omitted from public API responses |
+| Link listing / discovery | Public — appears in public listings | Private — excluded from public listings |
+
+Notes:
+
+- **Private mode does not make on-chain data confidential.** Stellar transactions are public by design; amounts, addresses, and transaction hashes are always visible on the ledger.
+- Private mode only limits off-chain exposure: link metadata is not returned by public API responses and the link is excluded from public listings.
+- Privacy modes are subject to network availability. If a mode is unavailable on the current network, it cannot be selected when creating a link; the API rejects such requests with `422 Unprocessable Entity`.
+- See the [privacy policy](https://quickex.example/privacy) for how QuickEx handles personal data.
+
+---
+
 ## Webhooks
 
 Register a webhook URL to receive a `POST` request whenever a payment to one of your QuickEx links is confirmed on the Stellar network.
@@ -158,3 +181,69 @@ def quickex_hook():
     # handle event...
     return "ok", 200
 ```
+
+---
+
+## Contract upgrades
+
+Upgrade authorization is **single-use and artifact-bound**. An approval is only valid for the exact WASM hash and version it was issued for, and only within its approval window.
+
+### Request an upgrade approval
+
+`POST /admin/upgrades/authorize`
+
+Request body:
+
+```json
+{
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0",
+  "expires_at": "2024-01-01T01:00:00.000Z"
+}
+```
+
+- `wasm_hash` (required) — the exact artifact hash the approval is bound to.
+- `version` (required) — the target contract version the approval is bound to.
+- `expires_at` (required) — end of the approval window; the approval is rejected at or after this time.
+
+Response `201 Created`:
+
+```json
+{
+  "id": "up_01HXYZ...",
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0",
+  "expires_at": "2024-01-01T01:00:00.000Z",
+  "status": "pending"
+}
+```
+
+### Apply an upgrade
+
+`POST /admin/upgrades/:id/apply`
+
+Request body:
+
+```json
+{
+  "wasm_hash": "<hex-encoded sha256 of the approved wasm>",
+  "version": "1.4.0"
+}
+```
+
+The supplied `wasm_hash` and `version` must match the values the approval was issued for. The approval is consumed on success and cannot be reused.
+
+Failure responses (no code or registry state is changed):
+
+| Status | Condition |
+| --- | --- |
+| `409 Conflict` | Approval already consumed (replay attempt). |
+| `410 Gone` | Approval window has expired. |
+| `422 Unprocessable Entity` | `wasm_hash` or `version` does not match the approved artifact. |
+| `409 Conflict` | Approval was cancelled. |
+
+### Cancel an upgrade approval
+
+`POST /admin/upgrades/:id/cancel`
+
+Response `204 No Content`. A cancelled approval can no longer be applied.
