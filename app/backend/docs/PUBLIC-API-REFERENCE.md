@@ -10,6 +10,29 @@ Authorization: Bearer <access_token>
 
 ---
 
+## Privacy modes
+
+QuickEx links can be created in one of two privacy modes. The table below states exactly what each mode exposes on-chain and off-chain. No mode hides information that the Stellar network itself records publicly.
+
+| Information | Public mode | Private mode |
+| --- | --- | --- |
+| Link URL / slug | Public — anyone with the URL can view the link | Public — the URL is still required to open the link |
+| Recipient address | Public — visible in the link and on-chain | Public — the destination address is recorded on-chain |
+| Sender address | Public — recorded on-chain | Public — recorded on-chain |
+| Amount & asset | Public — recorded on-chain | Public — recorded on-chain |
+| Transaction hash | Public — recorded on-chain | Public — recorded on-chain |
+| Link metadata (memo, label) | Public — returned by the API | Private — omitted from public API responses |
+| Link listing / discovery | Public — appears in public listings | Private — excluded from public listings |
+
+Notes:
+
+- **Private mode does not make on-chain data confidential.** Stellar transactions are public by design; amounts, addresses, and transaction hashes are always visible on the ledger.
+- Private mode only limits off-chain exposure: link metadata is not returned by public API responses and the link is excluded from public listings.
+- Privacy modes are subject to network availability. If a mode is unavailable on the current network, it cannot be selected when creating a link; the API rejects such requests with `422 Unprocessable Entity`.
+- See the [privacy policy](https://quickex.example/privacy) for how QuickEx handles personal data.
+
+---
+
 ## Webhooks
 
 Register a webhook URL to receive a `POST` request whenever a payment to one of your QuickEx links is confirmed on the Stellar network.
